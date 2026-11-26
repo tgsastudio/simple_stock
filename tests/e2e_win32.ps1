@@ -254,9 +254,15 @@ try {
     if ([Math]::Abs($r3.Left - 260) -gt 4 -or [Math]::Abs($r3.Top - 180) -gt 4) {
         throw "FAIL: Window position not restored! Expected ~(260,180), got ($($r3.Left),$($r3.Top))"
     }
+    # 驗證單一執行個體：重複開啟會立即喚醒原視窗並結束第二個行程
+    $dup = Start-Process $exe -PassThru
+    if (-not $dup.WaitForExit(3000) -or $dup.ExitCode -ne 0) {
+        if (-not $dup.HasExited) { Stop-Process -Id $dup.Id -Force -ErrorAction SilentlyContinue }
+        throw "FAIL: Second instance did not exit cleanly (Single-instance check failed)!"
+    }
     [void][E2EFull.U32]::PostMessageW($main3, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
     if (-not $proc.WaitForExit(4000)) { throw "FAIL: Third exit failed!" }
-    Write-Host "[PASS] 10. Restart & window position persistence verified (($($r3.Left),$($r3.Top)), ExitCode=$($proc.ExitCode))"
+    Write-Host "[PASS] 10. Restart, window position & single-instance verified (($($r3.Left),$($r3.Top)), ExitCode=$($proc.ExitCode))"
 
     Write-Host "`n=== ALL 10 FULL-FEATURE E2E TESTS PASSED! ==="
 }
