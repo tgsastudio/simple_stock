@@ -7,7 +7,8 @@
 use crate::config::{AppConfig, Market, MarketFilter, ViewMode, WindowRect};
 use crate::dialogs::{open_add_stock_dialog, open_edit_position_dialog, open_settings_dialog};
 use crate::i18n::{Lang, resolve_lang};
-use crate::market_hours::current_market_status;
+use crate::market_hours::TradingPeriod;
+use chrono::Utc;
 use crate::quote::QuoteData;
 use crate::win32_util::{
     apply_dark_title_bar, font_bold, font_regular, font_semibold, format_number, format_shares,
@@ -106,6 +107,7 @@ struct FontSet {
     price: HFONT,
     body: HFONT,
     small: HFONT,
+    small_bold: HFONT,
     badge: HFONT,
     dpi: u32,
 }
@@ -119,6 +121,7 @@ impl FontSet {
             price: font_bold(s(16)),
             body: font_regular(s(13)),
             small: font_regular(s(12)),
+            small_bold: font_bold(s(12)),
             badge: font_bold(s(10)),
             dpi,
         }
@@ -131,6 +134,7 @@ impl FontSet {
             DeleteObject(self.price as _);
             DeleteObject(self.body as _);
             DeleteObject(self.small as _);
+            DeleteObject(self.small_bold as _);
             DeleteObject(self.badge as _);
         }
     }
@@ -144,6 +148,8 @@ struct AppState {
     worker: Option<QuoteWorker>,
     worker_status: WorkerStatus,
     error_text: Option<String>,
+    tw_period: Option<TradingPeriod>,
+    us_period: Option<TradingPeriod>,
     fonts: FontSet,
 
     // 捲動、懸停與拖曳排序狀態
@@ -341,6 +347,10 @@ impl AppState {
                         self.quotes.insert(k, q);
                     }
                     self.error_text = None;
+                }
+                WorkerEvent::MarketPeriods { tw, us } => {
+                    self.tw_period = tw;
+                    self.us_period = us;
                 }
                 WorkerEvent::Status(s) => {
                     self.worker_status = s;
@@ -717,14 +727,18 @@ impl AppState {
                 DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
             );
 
-            let mkt_status = current_market_status(self.config.include_us_extended);
+            let now_ts = Utc::now().timestamp();
+            let tw_is_open = self.tw_period.is_some_and(|tp| tp.is_tw_open(now_ts));
+            let us_is_open = self
+                .us_period
+                .is_some_and(|tp| tp.is_us_open(now_ts, self.config.include_us_extended));
 
             // 空間足夠時顯示 TW / US 盤中指示燈
             if mode == ViewMode::Standard && title_right > pad + self.sc(142) {
                 let dot_y = y + top_h / 2;
                 let mut dx = pad + self.sc(78);
                 let dot_r = self.sc(3).max(3);
-                let tw_c = if mkt_status.tw_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
+                let tw_c = if tw_is_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
                 draw_dot(mem_dc, dx, dot_y, dot_r, tw_c);
                 let tr = RECT {
                     left: dx + self.sc(6),
@@ -735,7 +749,7 @@ impl AppState {
                 draw_text(mem_dc, "TW", &tr, self.fonts.small, text_muted, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
 
                 dx += self.sc(32);
-                let us_c = if mkt_status.us_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
+                let us_c = if us_is_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
                 draw_dot(mem_dc, dx, dot_y, dot_r, us_c);
                 let ur = RECT {
                     left: dx + self.sc(6),
@@ -764,8 +778,8 @@ impl AppState {
                     (MarketFilter::UsOnly, lang.filter_us()),
                 ] {
                     let is_open = match f {
-                        MarketFilter::TwOnly => mkt_status.tw_open,
-                        MarketFilter::UsOnly => mkt_status.us_open,
+                        MarketFilter::TwOnly => tw_is_open,
+                        MarketFilter::UsOnly => us_is_open,
                         MarketFilter::All => false,
                     };
                     let tab_w = if is_open {
@@ -1161,7 +1175,20 @@ impl AppState {
                                 let p_sign = if profit > 0.0 { "+" } else { "" };
                                 let pnl_col = self.price_color(item.market, profit);
                                 let div_y = row1_top + row1_h + self.sc(21);
-                                draw_hline(mem_dc, lx, right_pad, div_y, divider_col);
+                                let pnl_div_col = if dark {
+                                    rgb(64, 76, 102)
+                                } else {
+                                    rgb(194, 204, 218)
+                                };
+                                let div_r = RECT {
+                                    left: lx,
+                                    top: div_y,
+                                    right: right_pad,
+                                    bottom: div_y + self.sc(1).max(1),
+                                };
+                                let br = CreateSolidBrush(pnl_div_col);
+                                FillRect(mem_dc, &div_r, br);
+                                DeleteObject(br as _);
 
                                 let row3_top = div_y + self.sc(3);
                                 let row3_bot = card_r.bottom - self.sc(4);
@@ -1202,7 +1229,7 @@ impl AppState {
                                     mem_dc,
                                     &pnl_txt,
                                     &pnl_r,
-                                    self.fonts.small,
+                                    self.fonts.small_bold,
                                     pnl_col,
                                     DT_SINGLELINE | DT_VCENTER | DT_RIGHT,
                                 );
@@ -1762,6 +1789,8 @@ pub fn run_win32_app() {
             worker: None,
             worker_status: WorkerStatus::Initializing,
             error_text: None,
+            tw_period: None,
+            us_period: None,
             fonts,
             scroll_y: 0,
             max_scroll: 0,

@@ -3,8 +3,11 @@
 //! 在背景批次抓取台股與美股報價，並在有新資料時透過 Win32 `PostMessageW` 喚醒主視窗重繪。
 
 use crate::config::{AppConfig, Market, StockItem};
-use crate::market_hours::current_market_status;
-use crate::quote::{QuoteData, build_agent, fetch_tw_batch, fetch_us_quotes};
+use crate::market_hours::{TradingPeriod, current_market_status};
+use crate::quote::{
+    QuoteData, build_agent, fetch_market_trading_period, fetch_tw_batch, fetch_us_quotes,
+};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -32,6 +35,10 @@ pub enum WorkerStatus {
 
 pub enum WorkerEvent {
     QuotesUpdated(HashMap<String, QuoteData>),
+    MarketPeriods {
+        tw: Option<TradingPeriod>,
+        us: Option<TradingPeriod>,
+    },
     Status(WorkerStatus),
     Error(String),
 }
@@ -62,6 +69,10 @@ impl QuoteWorker {
             let mut initial_fetch_done = false;
             let mut consecutive_errors: u32 = 0;
             let mut last_fetch = Instant::now() - Duration::from_secs(3600);
+            let mut tw_period: Option<TradingPeriod> = None;
+            let mut us_period: Option<TradingPeriod> = None;
+            let mut last_tw_probe = Instant::now() - Duration::from_secs(3600);
+            let mut last_us_probe = Instant::now() - Duration::from_secs(3600);
 
             loop {
                 let status = current_market_status(config.include_us_extended);
@@ -80,19 +91,59 @@ impl QuoteWorker {
                 };
 
                 if should_poll_now {
+                    let now_ts = Utc::now().timestamp();
+                    let mut periods_dirty = false;
+
+                    if (!initial_fetch_done || status.tw_open)
+                        && !tw_period.is_some_and(|tp| tp.is_tw_open(now_ts))
+                        && last_tw_probe.elapsed() >= Duration::from_secs(60)
+                    {
+                        last_tw_probe = Instant::now();
+                        if let Some(tp) = fetch_market_trading_period(&agent, "^TWII") {
+                            if tw_period != Some(tp) {
+                                tw_period = Some(tp);
+                                periods_dirty = true;
+                            }
+                        }
+                    }
+
+                    let tw_open_now = tw_period.map_or(status.tw_open, |tp| tp.is_tw_open(now_ts));
+                    let us_open_now = us_period.map_or(status.us_open, |tp| {
+                        tp.is_us_open(now_ts, config.include_us_extended)
+                    });
+
                     let force_all = !initial_fetch_done || !config.smart_market_hours;
                     let tw_items: Vec<&StockItem> = config
                         .watchlist
                         .iter()
-                        .filter(|s| s.market == Market::Tw && (force_all || status.tw_open))
+                        .filter(|s| s.market == Market::Tw && (force_all || tw_open_now))
                         .collect();
                     let us_items: Vec<&StockItem> = config
                         .watchlist
                         .iter()
-                        .filter(|s| s.market == Market::Us && (force_all || status.us_open))
+                        .filter(|s| s.market == Market::Us && (force_all || us_open_now))
                         .collect();
 
                     if tw_items.is_empty() && us_items.is_empty() {
+                        if (!initial_fetch_done || status.us_open)
+                            && !us_period
+                                .is_some_and(|tp| tp.is_us_open(now_ts, config.include_us_extended))
+                            && last_us_probe.elapsed() >= Duration::from_secs(60)
+                        {
+                            last_us_probe = Instant::now();
+                            if let Some(tp) = fetch_market_trading_period(&agent, "^GSPC") {
+                                if us_period != Some(tp) {
+                                    us_period = Some(tp);
+                                    periods_dirty = true;
+                                }
+                            }
+                        }
+                        if periods_dirty {
+                            let _ = evt_tx.send(WorkerEvent::MarketPeriods {
+                                tw: tw_period,
+                                us: us_period,
+                            });
+                        }
                         let _ = evt_tx.send(WorkerEvent::Status(WorkerStatus::IdleClosed));
                         wake_ui();
                     } else {
@@ -106,13 +157,41 @@ impl QuoteWorker {
                             }
                         }
                         if !us_items.is_empty() {
-                            let (map, err) = fetch_us_quotes(&agent, &us_items);
+                            let (map, err) =
+                                fetch_us_quotes(&agent, &us_items, config.include_us_extended);
+                            for q in map.values() {
+                                if let Some(tp) = q.trading_period {
+                                    if us_period != Some(tp) {
+                                        us_period = Some(tp);
+                                        periods_dirty = true;
+                                    }
+                                    break;
+                                }
+                            }
                             merged.extend(map);
                             if let Some(e) = err {
                                 errors.push(e);
                             }
+                        } else if (!initial_fetch_done || status.us_open)
+                            && !us_period
+                                .is_some_and(|tp| tp.is_us_open(now_ts, config.include_us_extended))
+                            && last_us_probe.elapsed() >= Duration::from_secs(60)
+                        {
+                            last_us_probe = Instant::now();
+                            if let Some(tp) = fetch_market_trading_period(&agent, "^GSPC") {
+                                if us_period != Some(tp) {
+                                    us_period = Some(tp);
+                                    periods_dirty = true;
+                                }
+                            }
                         }
 
+                        if periods_dirty {
+                            let _ = evt_tx.send(WorkerEvent::MarketPeriods {
+                                tw: tw_period,
+                                us: us_period,
+                            });
+                        }
                         if !merged.is_empty() {
                             consecutive_errors = 0;
                             let _ = evt_tx.send(WorkerEvent::QuotesUpdated(merged));

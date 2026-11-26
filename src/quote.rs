@@ -3,6 +3,7 @@
 //! - 美股：透過 Yahoo Finance v8 chart 公開端點查詢（無需登入或 crumb）。
 
 use crate::config::{Market, StockItem};
+use crate::market_hours::TradingPeriod;
 use chrono::Local;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ pub struct QuoteData {
     pub volume: Option<u64>,
     pub updated_at: String,
     pub source: &'static str,
+    pub trading_period: Option<TradingPeriod>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +166,7 @@ pub fn fetch_tw_batch(
                     volume,
                     updated_at: updated_at.clone(),
                     source: "TWSE",
+                    trading_period: None,
                 },
             );
         }
@@ -174,8 +177,8 @@ pub fn fetch_tw_batch(
         let key = item.key();
         if !result.contains_key(&key) {
             let code = item.symbol.trim().to_uppercase();
-            if let Ok(q) = fetch_yahoo_single(agent, &format!("{code}.TW"), item)
-                .or_else(|_| fetch_yahoo_single(agent, &format!("{code}.TWO"), item))
+            if let Ok(q) = fetch_yahoo_single(agent, &format!("{code}.TW"), item, false)
+                .or_else(|_| fetch_yahoo_single(agent, &format!("{code}.TWO"), item, false))
             {
                 result.insert(key, q);
             }
@@ -186,14 +189,22 @@ pub fn fetch_tw_batch(
 }
 
 /// Fetch a single symbol from Yahoo Finance v8 chart API (no login / no crumb required).
+/// When `include_extended` is true, requests pre/post-market bars and uses the latest
+/// extended-hours close if its timestamp is newer than `regularMarketTime`.
 pub fn fetch_yahoo_single(
     agent: &ureq::Agent,
     yahoo_symbol: &str,
     item: &StockItem,
+    include_extended: bool,
 ) -> Result<QuoteData, String> {
     let encoded = yahoo_symbol.replace('^', "%5E");
+    let ext_param = if include_extended {
+        "&includePrePost=true"
+    } else {
+        ""
+    };
     let url = format!(
-        "https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1m&range=1d"
+        "https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1m&range=1d{ext_param}"
     );
 
     let resp = agent
@@ -209,8 +220,18 @@ pub fn fetch_yahoo_single(
         .pointer("/chart/result/0/meta")
         .ok_or_else(|| format!("找不到 {yahoo_symbol} 報價資料"))?;
 
-    let price = parse_f64_opt(meta.get("regularMarketPrice"))
+    let reg_price = parse_f64_opt(meta.get("regularMarketPrice"))
         .ok_or_else(|| format!("{yahoo_symbol} 無現價資料"))?;
+    let reg_time = meta
+        .get("regularMarketTime")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let price = if include_extended {
+        latest_extended_price(&body, reg_time).unwrap_or(reg_price)
+    } else {
+        reg_price
+    };
     let prev_close = parse_f64_opt(meta.get("chartPreviousClose"))
         .or_else(|| parse_f64_opt(meta.get("previousClose")))
         .unwrap_or(price);
@@ -242,6 +263,8 @@ pub fn fetch_yahoo_single(
         .get("regularMarketVolume")
         .and_then(|v| v.as_u64());
 
+    let trading_period = parse_trading_period(meta);
+
     Ok(QuoteData {
         symbol: item.symbol.to_uppercase(),
         display_name,
@@ -256,19 +279,77 @@ pub fn fetch_yahoo_single(
         volume,
         updated_at: now_hms(),
         source: "Yahoo",
+        trading_period,
     })
+}
+
+/// 解析 Yahoo Finance `meta.currentTradingPeriod`
+pub fn parse_trading_period(meta: &Value) -> Option<TradingPeriod> {
+    let ctp = meta.get("currentTradingPeriod")?;
+    let bounds = |key: &str| -> (i64, i64) {
+        let obj = ctp.get(key);
+        let s = obj.and_then(|o| o.get("start")).and_then(|v| v.as_i64()).unwrap_or(0);
+        let e = obj.and_then(|o| o.get("end")).and_then(|v| v.as_i64()).unwrap_or(0);
+        (s, e)
+    };
+    let (pre_start, pre_end) = bounds("pre");
+    let (reg_start, reg_end) = bounds("regular");
+    let (post_start, post_end) = bounds("post");
+    if reg_start <= 0 || reg_end <= 0 {
+        return None;
+    }
+    Some(TradingPeriod {
+        pre_start,
+        pre_end,
+        reg_start,
+        reg_end,
+        post_start,
+        post_end,
+    })
+}
+
+/// 查詢指定市場指數（如 `^TWII`、`^GSPC`）的最新實際交易時段
+pub fn fetch_market_trading_period(agent: &ureq::Agent, yahoo_symbol: &str) -> Option<TradingPeriod> {
+    let encoded = yahoo_symbol.replace('^', "%5E");
+    let url = format!(
+        "https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1d&range=1d"
+    );
+    let resp = agent.get(&url).call().ok()?;
+    let body: Value = resp.into_json().ok()?;
+    let meta = body.pointer("/chart/result/0/meta")?;
+    parse_trading_period(meta)
+}
+
+/// 從 Yahoo chart JSON 取得比 `regularMarketTime` 更新的盤前/盤後最新成交價
+fn latest_extended_price(body: &Value, reg_time: i64) -> Option<f64> {
+    let timestamps = body.pointer("/chart/result/0/timestamp")?.as_array()?;
+    let closes = body
+        .pointer("/chart/result/0/indicators/quote/0/close")?
+        .as_array()?;
+    let n = timestamps.len().min(closes.len());
+    for i in (0..n).rev() {
+        if let Some(p) = closes[i].as_f64().filter(|&v| v > 0.0) {
+            let ts = timestamps[i].as_i64().unwrap_or(0);
+            if ts > reg_time {
+                return Some(p);
+            }
+            break;
+        }
+    }
+    None
 }
 
 /// Fetch US stock quotes via Yahoo Finance.
 pub fn fetch_us_quotes(
     agent: &ureq::Agent,
     items: &[&StockItem],
+    include_extended: bool,
 ) -> (HashMap<String, QuoteData>, Option<String>) {
     let mut map = HashMap::new();
     let mut last_err = None;
     for item in items {
         let sym = item.symbol.trim().to_uppercase();
-        match fetch_yahoo_single(agent, &sym, item) {
+        match fetch_yahoo_single(agent, &sym, item, include_extended) {
             Ok(q) => {
                 map.insert(item.key(), q);
             }
@@ -389,7 +470,7 @@ mod tests {
         let (tw_pnl, tw_pct) = tw_item.pnl(tw_q.price).expect("TW pnl missing");
         println!("TW 2330 P&L: {:+.0} ({:+.2}%)", tw_pnl, tw_pct);
 
-        let (us_map, us_err) = fetch_us_quotes(&agent, &[&us_item]);
+        let (us_map, us_err) = fetch_us_quotes(&agent, &[&us_item], true);
         let us_q = us_map.get(&us_item.key()).unwrap_or_else(|| panic!("NVDA quote missing: {:?}", us_err));
         println!("US NVDA: {} @ {:.2} ({:+.2}%) via {}", us_q.display_name, us_q.price, us_q.change_percent, us_q.source);
         assert!(us_q.price > 0.0);

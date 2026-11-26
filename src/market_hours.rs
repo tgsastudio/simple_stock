@@ -17,6 +17,36 @@ pub struct MarketStatus {
     pub us_phase: UsPhase,
 }
 
+/// 由 Yahoo Finance `meta.currentTradingPeriod` 解析出的實際交易時段（Unix 秒）
+/// 可自動反映台美股國定假日休市、颱風假與美股提前收盤。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TradingPeriod {
+    pub pre_start: i64,
+    pub pre_end: i64,
+    pub reg_start: i64,
+    pub reg_end: i64,
+    pub post_start: i64,
+    pub post_end: i64,
+}
+
+impl TradingPeriod {
+    /// 判斷目前時間是否處於台股正規交易時段
+    pub fn is_tw_open(self, now_ts: i64) -> bool {
+        self.reg_start > 0 && now_ts >= self.reg_start && now_ts <= self.reg_end
+    }
+
+    /// 判斷目前時間是否處於美股交易時段（含或不含盤前/盤後）
+    pub fn is_us_open(self, now_ts: i64, include_extended: bool) -> bool {
+        let in_reg = self.reg_start > 0 && now_ts >= self.reg_start && now_ts <= self.reg_end;
+        if !include_extended {
+            return in_reg;
+        }
+        let in_pre = self.pre_start > 0 && now_ts >= self.pre_start && now_ts <= self.pre_end;
+        let in_post = self.post_start > 0 && now_ts >= self.post_start && now_ts <= self.post_end;
+        in_pre || in_reg || in_post
+    }
+}
+
 /// Check if a UTC date is within US Eastern Daylight Time (2nd Sunday in March to 1st Sunday in November).
 fn is_us_dst(utc: chrono::DateTime<Utc>) -> bool {
     let month = utc.month();
