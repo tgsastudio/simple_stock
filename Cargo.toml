@@ -1,6 +1,6 @@
 [package]
 name = "simple_stock"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "Lightweight Windows real-time stock dashboard for Taiwan and US markets"
 

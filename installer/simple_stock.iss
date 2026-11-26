@@ -1,30 +1,31 @@
 [Setup]
 AppId={{8E9B7D4C-4B6E-4A2D-9C1F-51A2B3C4D5E6}
 AppName=simple_stock
-AppVersion=0.3.1
-VersionInfoVersion=0.3.1.0
+AppVersion=0.3.2
+VersionInfoVersion=0.3.2.0
 AppPublisher=tgsastudio
 AppPublisherURL=https://github.com/tgsastudio/simple_stock
 DefaultDirName={autopf}\simple_stock
 DefaultGroupName=simple_stock
 AllowNoIcons=yes
 OutputDir=..\dist
-OutputBaseFilename=simple_stock-Setup-x64-v0.3.1
+OutputBaseFilename=simple_stock-Setup-x64-v0.3.2
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\simple_stock.exe
-Compression=lzma2/ultra64
+Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 ShowLanguageDialog=auto
-; Seamless in-place upgrade settings
+; Seamless in-place upgrade via Windows Restart Manager (no taskkill heuristics)
+AppMutex=Local\simple_stock_app_mutex
 UsePreviousAppDir=yes
 UsePreviousGroup=yes
 UsePreviousTasks=yes
 UsePreviousLanguage=yes
-CloseApplications=force
+CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
 
@@ -83,14 +84,4 @@ begin
       FmtMessage(CustomMessage('UpgradeNote'), [PrevVer]) + #13#10#13#10 +
       WizardForm.WelcomeLabel2.Caption;
   end;
-end;
-
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  ResultCode: Integer;
-begin
-  // Gracefully close any running simple_stock.exe instance so in-place upgrade never fails with a file lock
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM simple_stock.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(300);
-  Result := '';
 end;
