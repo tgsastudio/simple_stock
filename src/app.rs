@@ -1,0 +1,974 @@
+use crate::config::{
+    AppConfig, ColorScheme, Market, MarketFilter, RefreshMode, StockItem, ViewMode,
+};
+use crate::fonts::configure_fonts;
+use crate::market_hours::current_market_status;
+use crate::quote::{QuoteData, SearchResult, guess_market, search_symbols};
+use crate::worker::{QuoteWorker, WorkerCommand, WorkerEvent};
+use egui::{
+    Align, Color32, Context, CornerRadius, Frame, Id, Layout, Margin, RichText, Sense, Stroke,
+    Vec2, ViewportCommand, WindowLevel,
+};
+use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortDisplay {
+    Custom,
+    ChangeDesc,
+    ChangeAsc,
+}
+
+pub struct StockApp {
+    config: AppConfig,
+    quotes: HashMap<String, QuoteData>,
+    worker: QuoteWorker,
+    status_text: String,
+    error_text: Option<String>,
+    last_minimized: bool,
+    applied_initial_viewport: bool,
+
+    // UI dialogs
+    show_add_dialog: bool,
+    show_settings_dialog: bool,
+    sort_display: SortDisplay,
+
+    // Add stock form
+    add_symbol_input: String,
+    add_name_input: String,
+    add_market_override: Option<Market>,
+    search_results: Vec<SearchResult>,
+    search_loading: bool,
+    search_error: Option<String>,
+    search_rx: Option<Receiver<Result<Vec<SearchResult>, String>>>,
+
+    // Drag-and-drop state
+    dragging_idx: Option<usize>,
+}
+
+impl StockApp {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        configure_fonts(&cc.egui_ctx);
+        let config = AppConfig::load();
+        let worker = QuoteWorker::spawn(config.clone(), cc.egui_ctx.clone());
+
+        Self {
+            config,
+            quotes: HashMap::new(),
+            worker,
+            status_text: "初始化中...".to_string(),
+            error_text: None,
+            last_minimized: false,
+            applied_initial_viewport: false,
+            show_add_dialog: false,
+            show_settings_dialog: false,
+            sort_display: SortDisplay::Custom,
+            add_symbol_input: String::new(),
+            add_name_input: String::new(),
+            add_market_override: None,
+            search_results: Vec::new(),
+            search_loading: false,
+            search_error: None,
+            search_rx: None,
+            dragging_idx: None,
+        }
+    }
+
+    fn save_and_sync(&self) {
+        self.config.save();
+        let _ = self
+            .worker
+            .tx
+            .send(WorkerCommand::UpdateConfig(self.config.clone()));
+    }
+
+    fn apply_viewport_for_mode(&mut self, ctx: &Context, resize: bool) {
+        let mode = self.config.view_mode;
+        let decorations = mode != ViewMode::FloatingWidget;
+        ctx.send_viewport_cmd(ViewportCommand::Decorations(decorations));
+
+        let level = if self.config.always_on_top {
+            WindowLevel::AlwaysOnTop
+        } else {
+            WindowLevel::Normal
+        };
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
+
+        if resize {
+            let [w, h] = mode.default_size();
+            ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(w, h)));
+        }
+    }
+
+    fn switch_view_mode(&mut self, ctx: &Context, new_mode: ViewMode) {
+        if self.config.view_mode == new_mode {
+            return;
+        }
+        self.config.view_mode = new_mode;
+        if new_mode == ViewMode::FloatingWidget {
+            self.config.always_on_top = true;
+        }
+        self.apply_viewport_for_mode(ctx, true);
+        self.save_and_sync();
+    }
+
+    fn drain_worker_events(&mut self) {
+        while let Ok(evt) = self.worker.rx.try_recv() {
+            match evt {
+                WorkerEvent::QuotesUpdated(map) => {
+                    for (k, q) in map {
+                        // Update stored name if it was blank or matched symbol
+                        if let Some(item) = self.config.watchlist.iter_mut().find(|i| i.key() == k)
+                        {
+                            if (item.name.is_empty() || item.name == item.symbol)
+                                && !q.display_name.is_empty()
+                            {
+                                item.name = q.display_name.clone();
+                            }
+                        }
+                        self.quotes.insert(k, q);
+                    }
+                    self.error_text = None;
+                }
+                WorkerEvent::Status(s) => {
+                    self.status_text = s;
+                }
+                WorkerEvent::Error(e) => {
+                    self.error_text = Some(e);
+                }
+            }
+        }
+
+        if let Some(rx) = &self.search_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.search_loading = false;
+                self.search_rx = None;
+                match res {
+                    Ok(list) => {
+                        self.search_results = list;
+                        self.search_error = None;
+                    }
+                    Err(e) => {
+                        self.search_error = Some(e);
+                    }
+                }
+            }
+        }
+    }
+
+    fn price_color(&self, market: Market, change: f64) -> Color32 {
+        if change.abs() < 1e-6 {
+            return if self.config.dark_mode {
+                Color32::from_rgb(190, 195, 205)
+            } else {
+                Color32::from_rgb(80, 85, 95)
+            };
+        }
+        let red_up = self.config.color_scheme.is_red_up(market);
+        let is_up = change > 0.0;
+        let use_red = (is_up && red_up) || (!is_up && !red_up);
+        if use_red {
+            if self.config.dark_mode {
+                Color32::from_rgb(248, 92, 92)
+            } else {
+                Color32::from_rgb(205, 38, 38)
+            }
+        } else if self.config.dark_mode {
+            Color32::from_rgb(52, 211, 130)
+        } else {
+            Color32::from_rgb(20, 145, 78)
+        }
+    }
+
+    fn bg_color(&self) -> Color32 {
+        let alpha = (self.config.opacity.clamp(0.25, 1.0) * 255.0) as u8;
+        if self.config.dark_mode {
+            Color32::from_rgba_unmultiplied(18, 22, 30, alpha)
+        } else {
+            Color32::from_rgba_unmultiplied(246, 248, 252, alpha)
+        }
+    }
+
+    fn card_color(&self) -> Color32 {
+        let alpha = ((self.config.opacity * 0.92).clamp(0.2, 1.0) * 255.0) as u8;
+        if self.config.dark_mode {
+            Color32::from_rgba_unmultiplied(28, 33, 44, alpha)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, alpha)
+        }
+    }
+
+    fn add_stock_item(&mut self, symbol: String, name: String, market: Market) {
+        let clean_sym = symbol.trim().to_uppercase();
+        if clean_sym.is_empty() {
+            return;
+        }
+        let clean_name = if name.trim().is_empty() {
+            clean_sym.clone()
+        } else {
+            name.trim().to_string()
+        };
+        let item = StockItem {
+            symbol: clean_sym,
+            name: clean_name,
+            market,
+        };
+        let key = item.key();
+        if !self.config.watchlist.iter().any(|x| x.key() == key) {
+            self.config.watchlist.push(item);
+            self.save_and_sync();
+        }
+    }
+
+    fn start_search(&mut self, ctx: &Context) {
+        let query = self.add_symbol_input.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        self.search_loading = true;
+        self.search_error = None;
+        let (tx, rx) = mpsc::channel();
+        self.search_rx = Some(rx);
+        let ctx_clone = ctx.clone();
+        thread::spawn(move || {
+            let res = search_symbols(&query);
+            let _ = tx.send(res);
+            ctx_clone.request_repaint();
+        });
+    }
+
+    fn render_top_bar(&mut self, ui: &mut egui::Ui, ctx: &Context) {
+        let mode = self.config.view_mode;
+        let status = current_market_status(self.config.include_us_extended);
+
+        ui.horizontal(|ui| {
+            // In FloatingWidget mode, dragging the header moves the borderless window
+            let title_resp = ui.add(
+                egui::Label::new(
+                    RichText::new(if mode == ViewMode::Standard {
+                        "simple_stock"
+                    } else {
+                        "📈"
+                    })
+                    .strong()
+                    .size(14.0),
+                )
+                .sense(Sense::drag()),
+            );
+            if mode == ViewMode::FloatingWidget && title_resp.drag_started() {
+                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            }
+
+            if mode == ViewMode::Standard {
+                let tw_dot = if status.tw_open {
+                    Color32::from_rgb(52, 211, 130)
+                } else {
+                    Color32::from_rgb(130, 135, 145)
+                };
+                let us_dot = if status.us_open {
+                    Color32::from_rgb(52, 211, 130)
+                } else {
+                    Color32::from_rgb(130, 135, 145)
+                };
+                ui.label(RichText::new("●").color(tw_dot).size(10.0))
+                    .on_hover_text(status.tw_label);
+                ui.label(RichText::new("TW").size(11.0).weak());
+                ui.label(RichText::new("●").color(us_dot).size(10.0))
+                    .on_hover_text(status.us_label);
+                ui.label(RichText::new("US").size(11.0).weak());
+            }
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if mode == ViewMode::FloatingWidget {
+                    if ui.small_button("✕").on_hover_text("關閉").clicked() {
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    }
+                }
+
+                if ui.small_button("⚙").on_hover_text("設定").clicked() {
+                    self.show_settings_dialog = !self.show_settings_dialog;
+                }
+
+                if ui.small_button("＋").on_hover_text("新增自選股").clicked() {
+                    self.show_add_dialog = !self.show_add_dialog;
+                }
+
+                if ui.small_button("⟳").on_hover_text("立即刷新").clicked() {
+                    let _ = self.worker.tx.send(WorkerCommand::ForceRefresh);
+                    self.status_text = "更新中...".to_string();
+                }
+
+                let pin_text = if self.config.always_on_top {
+                    RichText::new("📌").color(Color32::from_rgb(250, 190, 60))
+                } else {
+                    RichText::new("📌").weak()
+                };
+                if ui
+                    .small_button(pin_text)
+                    .on_hover_text("切換視窗置頂")
+                    .clicked()
+                {
+                    self.config.always_on_top = !self.config.always_on_top;
+                    self.apply_viewport_for_mode(ctx, false);
+                    self.save_and_sync();
+                }
+
+                // Mode switcher buttons
+                for m in [
+                    ViewMode::FloatingWidget,
+                    ViewMode::Sidebar,
+                    ViewMode::Standard,
+                ] {
+                    let selected = self.config.view_mode == m;
+                    let label = match m {
+                        ViewMode::Standard => "標準",
+                        ViewMode::Sidebar => "側邊",
+                        ViewMode::FloatingWidget => "浮動",
+                    };
+                    if ui
+                        .selectable_label(selected, RichText::new(label).size(11.0))
+                        .clicked()
+                    {
+                        self.switch_view_mode(ctx, m);
+                    }
+                }
+            });
+        });
+    }
+
+    fn render_filter_bar(&mut self, ui: &mut egui::Ui) {
+        if self.config.view_mode != ViewMode::Standard {
+            return;
+        }
+        ui.horizontal(|ui| {
+            for (f, label) in [
+                (MarketFilter::All, "全部"),
+                (MarketFilter::TwOnly, "台股"),
+                (MarketFilter::UsOnly, "美股"),
+            ] {
+                if ui
+                    .selectable_label(self.config.market_filter == f, label)
+                    .clicked()
+                {
+                    self.config.market_filter = f;
+                    self.save_and_sync();
+                }
+            }
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                egui::ComboBox::from_id_salt("sort_display_combo")
+                    .width(96.0)
+                    .selected_text(match self.sort_display {
+                        SortDisplay::Custom => "自訂順序",
+                        SortDisplay::ChangeDesc => "漲幅高→低",
+                        SortDisplay::ChangeAsc => "漲幅低→高",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.sort_display,
+                            SortDisplay::Custom,
+                            "自訂順序",
+                        );
+                        ui.selectable_value(
+                            &mut self.sort_display,
+                            SortDisplay::ChangeDesc,
+                            "漲幅高→低",
+                        );
+                        ui.selectable_value(
+                            &mut self.sort_display,
+                            SortDisplay::ChangeAsc,
+                            "漲幅低→高",
+                        );
+                    });
+            });
+        });
+    }
+
+    fn render_watchlist(&mut self, ui: &mut egui::Ui) {
+        let mode = self.config.view_mode;
+        let is_compact = mode != ViewMode::Standard;
+
+        // Build ordered indices according to filter and temporary sort
+        let mut indices: Vec<usize> = self
+            .config
+            .watchlist
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| match self.config.market_filter {
+                MarketFilter::All => true,
+                MarketFilter::TwOnly => item.market == Market::Tw,
+                MarketFilter::UsOnly => item.market == Market::Us,
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        match self.sort_display {
+            SortDisplay::Custom => {}
+            SortDisplay::ChangeDesc => {
+                indices.sort_by(|&a, &b| {
+                    let qa = self
+                        .quotes
+                        .get(&self.config.watchlist[a].key())
+                        .map(|q| q.change_percent)
+                        .unwrap_or(f64::NEG_INFINITY);
+                    let qb = self
+                        .quotes
+                        .get(&self.config.watchlist[b].key())
+                        .map(|q| q.change_percent)
+                        .unwrap_or(f64::NEG_INFINITY);
+                    qb.partial_cmp(&qa).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            SortDisplay::ChangeAsc => {
+                indices.sort_by(|&a, &b| {
+                    let qa = self
+                        .quotes
+                        .get(&self.config.watchlist[a].key())
+                        .map(|q| q.change_percent)
+                        .unwrap_or(f64::INFINITY);
+                    let qb = self
+                        .quotes
+                        .get(&self.config.watchlist[b].key())
+                        .map(|q| q.change_percent)
+                        .unwrap_or(f64::INFINITY);
+                    qa.partial_cmp(&qb).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+
+        if indices.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("尚未設定自選股，請點擊右上角 ＋ 新增").weak());
+            });
+            return;
+        }
+
+        let mut action_move: Option<(usize, usize)> = None;
+        let mut action_pin_top: Option<usize> = None;
+        let mut action_delete: Option<usize> = None;
+        let allow_drag = self.sort_display == SortDisplay::Custom
+            && self.config.market_filter == MarketFilter::All;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = if is_compact { 4.0 } else { 6.0 };
+
+                for &idx in &indices {
+                    let item = self.config.watchlist[idx].clone();
+                    let quote = self.quotes.get(&item.key()).cloned();
+                    let card_bg = self.card_color();
+                    let is_being_dragged = self.dragging_idx == Some(idx);
+
+                    let stroke = if is_being_dragged {
+                        Stroke::new(1.5_f32, Color32::from_rgb(90, 160, 255))
+                    } else if self.config.dark_mode {
+                        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 18))
+                    } else {
+                        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 0, 0, 20))
+                    };
+
+                    let frame_resp = Frame::new()
+                        .fill(card_bg)
+                        .stroke(stroke)
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(
+                            if is_compact { 8 } else { 10 },
+                            if is_compact { 5 } else { 7 },
+                        ))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // Drag handle in Custom order
+                                if allow_drag && !is_compact {
+                                    let handle = ui.add(
+                                        egui::Label::new(RichText::new("☰").weak().size(13.0))
+                                            .sense(Sense::drag()),
+                                    );
+                                    if handle.drag_started() {
+                                        self.dragging_idx = Some(idx);
+                                    }
+                                    handle.on_hover_text("拖曳調整排序");
+                                }
+
+                                // Left: Symbol + Name
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        let badge_color = match item.market {
+                                            Market::Tw => Color32::from_rgb(76, 154, 255),
+                                            Market::Us => Color32::from_rgb(174, 128, 255),
+                                        };
+                                        if !is_compact {
+                                            ui.label(
+                                                RichText::new(item.market.badge())
+                                                    .color(badge_color)
+                                                    .size(10.0)
+                                                    .strong(),
+                                            );
+                                        }
+                                        ui.label(
+                                            RichText::new(&item.symbol)
+                                                .strong()
+                                                .size(if is_compact { 13.0 } else { 14.0 }),
+                                        );
+                                    });
+                                    let name_display = quote
+                                        .as_ref()
+                                        .map(|q| q.display_name.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or(&item.name);
+                                    let truncated: String = name_display.chars().take(12).collect();
+                                    ui.label(
+                                        RichText::new(truncated)
+                                            .weak()
+                                            .size(if is_compact { 10.5 } else { 11.5 }),
+                                    );
+                                });
+
+                                // Right: Price + Change
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if let Some(q) = &quote {
+                                        let color = self.price_color(item.market, q.change);
+                                        ui.vertical(|ui| {
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Min),
+                                                |ui| {
+                                                    ui.label(
+                                                        RichText::new(format!("{:.2}", q.price))
+                                                            .color(color)
+                                                            .strong()
+                                                            .size(if is_compact {
+                                                                14.0
+                                                            } else {
+                                                                15.5
+                                                            }),
+                                                    );
+                                                },
+                                            );
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Min),
+                                                |ui| {
+                                                    let sign = if q.change > 0.0 { "+" } else { "" };
+                                                    let detail = if is_compact {
+                                                        format!(
+                                                            "{sign}{:.2}%",
+                                                            q.change_percent
+                                                        )
+                                                    } else {
+                                                        format!(
+                                                            "{sign}{:.2} ({sign}{:.2}%)",
+                                                            q.change, q.change_percent
+                                                        )
+                                                    };
+                                                    ui.label(
+                                                        RichText::new(detail)
+                                                            .color(color)
+                                                            .size(if is_compact {
+                                                                11.0
+                                                            } else {
+                                                                11.5
+                                                            }),
+                                                    );
+                                                },
+                                            );
+                                        });
+                                    } else {
+                                        ui.label(RichText::new("--").weak());
+                                    }
+                                });
+                            });
+                        });
+
+                    let row_resp = frame_resp.response.interact(Sense::click());
+
+                    // Drag-drop target check
+                    if let Some(drag_from) = self.dragging_idx {
+                        if drag_from != idx && row_resp.hovered() {
+                            action_move = Some((drag_from, idx));
+                        }
+                    }
+
+                    // Hover tooltip with detailed intraday stats
+                    if let Some(q) = &quote {
+                        row_resp.clone().on_hover_ui(|ui| {
+                            ui.label(
+                                RichText::new(format!("{} ({})", q.display_name, q.symbol))
+                                    .strong(),
+                            );
+                            ui.separator();
+                            ui.label(format!("昨收：{:.2}", q.prev_close));
+                            if let Some(o) = q.open {
+                                ui.label(format!("開盤：{o:.2}"));
+                            }
+                            if let (Some(h), Some(l)) = (q.high, q.low) {
+                                ui.label(format!("最高 / 最低：{h:.2} / {l:.2}"));
+                            }
+                            if let Some(v) = q.volume {
+                                ui.label(format!("成交量：{v}"));
+                            }
+                            ui.label(
+                                RichText::new(format!(
+                                    "來源：{} ・ 更新：{}",
+                                    q.source, q.updated_at
+                                ))
+                                .weak()
+                                .size(11.0),
+                            );
+                        });
+                    }
+
+                    // Right-click context menu for reordering & deleting
+                    row_resp.context_menu(|ui| {
+                        if ui.button("⬆ 移至最頂").clicked() {
+                            action_pin_top = Some(idx);
+                            ui.close_menu();
+                        }
+                        if idx > 0 && ui.button("↑ 上移一格").clicked() {
+                            action_move = Some((idx, idx - 1));
+                            ui.close_menu();
+                        }
+                        if idx + 1 < self.config.watchlist.len() && ui.button("↓ 下移一格").clicked()
+                        {
+                            action_move = Some((idx, idx + 1));
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui
+                            .button(RichText::new("🗑 移除自選股").color(Color32::from_rgb(240, 90, 90)))
+                            .clicked()
+                        {
+                            action_delete = Some(idx);
+                            ui.close_menu();
+                        }
+                    });
+                }
+            });
+
+        // Stop dragging when mouse button is released
+        if self.dragging_idx.is_some() && !ui.input(|i| i.pointer.primary_down()) {
+            self.dragging_idx = None;
+        }
+
+        if let Some((from, to)) = action_move {
+            if from < self.config.watchlist.len() && to < self.config.watchlist.len() {
+                let item = self.config.watchlist.remove(from);
+                self.config.watchlist.insert(to, item);
+                if self.dragging_idx == Some(from) {
+                    self.dragging_idx = Some(to);
+                }
+                self.save_and_sync();
+            }
+        } else if let Some(idx) = action_pin_top {
+            if idx < self.config.watchlist.len() && idx > 0 {
+                let item = self.config.watchlist.remove(idx);
+                self.config.watchlist.insert(0, item);
+                self.save_and_sync();
+            }
+        } else if let Some(idx) = action_delete {
+            if idx < self.config.watchlist.len() {
+                self.config.watchlist.remove(idx);
+                self.save_and_sync();
+            }
+        }
+    }
+
+    fn render_add_dialog(&mut self, ctx: &Context) {
+        if !self.show_add_dialog {
+            return;
+        }
+        let mut open = self.show_add_dialog;
+        egui::Window::new("新增自選股")
+            .id(Id::new("add_stock_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.label("輸入台股代碼 (如 2330, 0050) 或美股代碼 (如 AAPL, NVDA)：");
+                ui.horizontal(|ui| {
+                    let resp = ui.text_edit_singleline(&mut self.add_symbol_input);
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        self.start_search(ctx);
+                    }
+                    if ui.button("線上搜尋").clicked() {
+                        self.start_search(ctx);
+                    }
+                });
+
+                let guessed = guess_market(&self.add_symbol_input);
+                let selected_market = self.add_market_override.unwrap_or(guessed);
+                ui.horizontal(|ui| {
+                    ui.label("市場：");
+                    if ui
+                        .selectable_label(selected_market == Market::Tw, "台股 (TW)")
+                        .clicked()
+                    {
+                        self.add_market_override = Some(Market::Tw);
+                    }
+                    if ui
+                        .selectable_label(selected_market == Market::Us, "美股 (US)")
+                        .clicked()
+                    {
+                        self.add_market_override = Some(Market::Us);
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("名稱 (可留空自動抓)：");
+                    ui.text_edit_singleline(&mut self.add_name_input);
+                });
+
+                if ui.button("直接加入自選股").clicked() && !self.add_symbol_input.trim().is_empty()
+                {
+                    let sym = self.add_symbol_input.clone();
+                    let name = self.add_name_input.clone();
+                    self.add_stock_item(sym, name, selected_market);
+                    self.add_symbol_input.clear();
+                    self.add_name_input.clear();
+                    self.add_market_override = None;
+                }
+
+                if self.search_loading {
+                    ui.separator();
+                    ui.label("搜尋中...");
+                } else if let Some(err) = &self.search_error {
+                    ui.separator();
+                    ui.label(RichText::new(err).color(Color32::from_rgb(240, 100, 100)));
+                } else if !self.search_results.is_empty() {
+                    ui.separator();
+                    ui.label(RichText::new("搜尋結果（點擊加入）：").strong().size(12.0));
+                    let results = self.search_results.clone();
+                    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                        for r in results {
+                            let btn_text = format!(
+                                "[{}] {} - {} ({})",
+                                r.market.badge(),
+                                r.symbol,
+                                r.name,
+                                r.exchange
+                            );
+                            if ui.button(btn_text).clicked() {
+                                self.add_stock_item(r.symbol, r.name, r.market);
+                            }
+                        }
+                    });
+                }
+            });
+        self.show_add_dialog = open;
+    }
+
+    fn render_settings_dialog(&mut self, ctx: &Context) {
+        if !self.show_settings_dialog {
+            return;
+        }
+        let mut open = self.show_settings_dialog;
+        let mut changed = false;
+        let mut viewport_changed = false;
+
+        egui::Window::new("設定")
+            .id(Id::new("settings_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("刷新頻率與省電").strong());
+                egui::ComboBox::from_id_salt("refresh_mode_combo")
+                    .selected_text(self.config.refresh_mode.label())
+                    .show_ui(ui, |ui| {
+                        for mode in RefreshMode::all() {
+                            if ui
+                                .selectable_value(&mut self.config.refresh_mode, mode, mode.label())
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                    });
+
+                if ui
+                    .checkbox(
+                        &mut self.config.smart_market_hours,
+                        "開盤時段感知（休市自動停止輪詢）",
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+                if ui
+                    .checkbox(
+                        &mut self.config.pause_when_minimized,
+                        "視窗最小化時暫停刷新",
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+                if ui
+                    .checkbox(&mut self.config.include_us_extended, "包含美股盤前/盤後時段")
+                    .changed()
+                {
+                    changed = true;
+                }
+
+                ui.separator();
+                ui.label(RichText::new("外觀與配色").strong());
+
+                egui::ComboBox::from_id_salt("color_scheme_combo")
+                    .selected_text(self.config.color_scheme.label())
+                    .show_ui(ui, |ui| {
+                        for cs in [
+                            ColorScheme::TwRedUp,
+                            ColorScheme::UsGreenUp,
+                            ColorScheme::AutoByMarket,
+                        ] {
+                            if ui
+                                .selectable_value(&mut self.config.color_scheme, cs, cs.label())
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                    });
+
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.config.opacity, 0.25..=1.0)
+                            .text("視窗透明度")
+                            .fixed_decimals(2),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+
+                if ui.checkbox(&mut self.config.dark_mode, "深色主題").changed() {
+                    changed = true;
+                }
+
+                if ui
+                    .checkbox(&mut self.config.always_on_top, "視窗置頂 (Always on Top)")
+                    .changed()
+                {
+                    changed = true;
+                    viewport_changed = true;
+                }
+
+                ui.separator();
+                let path = AppConfig::config_path();
+                ui.label(
+                    RichText::new(format!("設定檔：{}", path.display()))
+                        .weak()
+                        .size(10.5),
+                );
+            });
+
+        self.show_settings_dialog = open;
+        if viewport_changed {
+            self.apply_viewport_for_mode(ctx, false);
+        }
+        if changed {
+            self.save_and_sync();
+        }
+    }
+
+    fn render_bottom_bar(&self, ui: &mut egui::Ui) {
+        if self.config.view_mode == ViewMode::FloatingWidget {
+            return;
+        }
+        ui.horizontal(|ui| {
+            if let Some(err) = &self.error_text {
+                ui.label(
+                    RichText::new(err)
+                        .color(Color32::from_rgb(245, 130, 100))
+                        .size(10.5),
+                );
+            } else {
+                ui.label(RichText::new(&self.status_text).weak().size(10.5));
+            }
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(self.config.refresh_mode.label())
+                        .weak()
+                        .size(10.5),
+                );
+            });
+        });
+    }
+}
+
+impl eframe::App for StockApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Transparent clear color so FloatingWidget rounded corners & opacity work cleanly
+        Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
+    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        if !self.applied_initial_viewport {
+            self.applied_initial_viewport = true;
+            self.apply_viewport_for_mode(ctx, false);
+        }
+
+        // Detect minimized state changes for power-saving pause
+        let is_minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if is_minimized != self.last_minimized {
+            self.last_minimized = is_minimized;
+            let _ = self
+                .worker
+                .tx
+                .send(WorkerCommand::SetMinimized(is_minimized));
+        }
+
+        self.drain_worker_events();
+
+        if self.config.dark_mode {
+            ctx.set_visuals(egui::Visuals::dark());
+        } else {
+            ctx.set_visuals(egui::Visuals::light());
+        }
+
+        let rounding = if self.config.view_mode == ViewMode::FloatingWidget {
+            CornerRadius::same(10)
+        } else {
+            CornerRadius::ZERO
+        };
+
+        let outer_frame = Frame::new()
+            .fill(self.bg_color())
+            .corner_radius(rounding)
+            .inner_margin(Margin::same(8));
+
+        egui::CentralPanel::default()
+            .frame(outer_frame)
+            .show(ctx, |ui| {
+                self.render_top_bar(ui, ctx);
+                ui.add_space(4.0);
+                self.render_filter_bar(ui);
+                if self.config.view_mode == ViewMode::Standard {
+                    ui.add_space(4.0);
+                }
+                let bottom_reserve = if self.config.view_mode == ViewMode::FloatingWidget {
+                    0.0
+                } else {
+                    20.0
+                };
+                let avail = (ui.available_height() - bottom_reserve).max(60.0);
+                ui.allocate_ui(Vec2::new(ui.available_width(), avail), |ui| {
+                    self.render_watchlist(ui);
+                });
+                if bottom_reserve > 0.0 {
+                    ui.separator();
+                    self.render_bottom_bar(ui);
+                }
+            });
+
+        self.render_add_dialog(ctx);
+        self.render_settings_dialog(ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let _ = self.worker.tx.send(WorkerCommand::Shutdown);
+        self.config.save();
+    }
+}
