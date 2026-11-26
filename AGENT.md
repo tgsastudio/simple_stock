@@ -70,7 +70,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\dev\stock widget\tests\e
 4. 新增自選股（含持股股數與成本）
 5. 線上關鍵字搜尋與 `Esc` 關閉對話框
 6. 編輯持股與即時收益預覽計算
-7. 設定視窗儲存與 GitHub 最新版本檢查
+7. 設定視窗四分頁（一般 / 外觀 / 刷新 / 關於）切換、Windows 開機自動啟動登錄檔寫入與移除、GitHub 最新版本檢查與儲存
 8. 市場分頁切換、漲跌排序循環與手動刷新
 9. DPAPI 加密驗證（無明文外洩）與記憶體檢核（`Private RAM < 20 MB`）
 10. 重啟後視窗位置還原 + 單一執行個體檢查（重複啟動立即退出）

@@ -106,6 +106,180 @@ pub fn open_url_in_browser(url: &str) {
     }
 }
 
+/// Windows 開機自動啟動（HKCU\...\Run）登錄檔存取，查詢與寫入共用同一組宣告
+mod autostart_reg {
+    use super::to_wide;
+    use std::ptr;
+
+    pub type Hkey = *mut core::ffi::c_void;
+    pub const HKEY_CURRENT_USER: Hkey = (-2147483647i32 as isize) as Hkey;
+    pub const KEY_READ: u32 = 0x0002_0019;
+    pub const KEY_SET_VALUE: u32 = 0x0002;
+    pub const REG_SZ: u32 = 1;
+    pub const REG_EXPAND_SZ: u32 = 2;
+    pub const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const APPMODEL_ERROR_NO_PACKAGE: i32 = 15700;
+
+    pub const SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    pub const VALUE_NAME: &str = "Stock TW";
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        pub fn RegOpenKeyExW(
+            hkey: Hkey,
+            lp_sub_key: *const u16,
+            ul_options: u32,
+            sam_desired: u32,
+            phk_result: *mut Hkey,
+        ) -> i32;
+        pub fn RegQueryValueExW(
+            hkey: Hkey,
+            lp_value_name: *const u16,
+            lp_reserved: *mut u32,
+            lp_type: *mut u32,
+            lp_data: *mut u8,
+            lpcb_data: *mut u32,
+        ) -> i32;
+        pub fn RegCreateKeyExW(
+            hkey: Hkey,
+            lp_sub_key: *const u16,
+            reserved: u32,
+            lp_class: *const u16,
+            dw_options: u32,
+            sam_desired: u32,
+            lp_security_attributes: *const core::ffi::c_void,
+            phk_result: *mut Hkey,
+            lpdw_disposition: *mut u32,
+        ) -> i32;
+        pub fn RegSetValueExW(
+            hkey: Hkey,
+            lp_value_name: *const u16,
+            reserved: u32,
+            dw_type: u32,
+            lp_data: *const u8,
+            cb_data: u32,
+        ) -> i32;
+        pub fn RegDeleteValueW(hkey: Hkey, lp_value_name: *const u16) -> i32;
+        pub fn RegCloseKey(hkey: Hkey) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentPackageFullName(length: *mut u32, name: *mut u16) -> i32;
+    }
+
+    /// 是否以 MSIX 封裝身分執行（封裝應用程式的 HKCU Run 寫入會被虛擬化而不生效）
+    pub fn is_packaged() -> bool {
+        let mut len: u32 = 0;
+        unsafe { GetCurrentPackageFullName(&mut len, ptr::null_mut()) != APPMODEL_ERROR_NO_PACKAGE }
+    }
+
+    /// 讀取目前登錄的啟動命令（未設定時回傳 `None`）
+    pub fn read_command() -> Option<String> {
+        let subkey = to_wide(SUBKEY);
+        let val_name = to_wide(VALUE_NAME);
+        unsafe {
+            let mut hkey: Hkey = ptr::null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+                return None;
+            }
+            let mut val_type: u32 = 0;
+            let mut cb: u32 = 0;
+            let st = RegQueryValueExW(
+                hkey,
+                val_name.as_ptr(),
+                ptr::null_mut(),
+                &mut val_type,
+                ptr::null_mut(),
+                &mut cb,
+            );
+            let mut result = None;
+            if st == 0 && (val_type == REG_SZ || val_type == REG_EXPAND_SZ) && cb > 2 {
+                let mut buf = vec![0u16; (cb as usize).div_ceil(2) + 1];
+                let mut cb2 = (buf.len() * 2) as u32;
+                let st2 = RegQueryValueExW(
+                    hkey,
+                    val_name.as_ptr(),
+                    ptr::null_mut(),
+                    &mut val_type,
+                    buf.as_mut_ptr() as *mut u8,
+                    &mut cb2,
+                );
+                if st2 == 0 {
+                    let n = (cb2 as usize / 2).min(buf.len());
+                    let s = String::from_utf16_lossy(&buf[..n]);
+                    result = Some(s.trim_end_matches('\0').to_string());
+                }
+            }
+            RegCloseKey(hkey);
+            result
+        }
+    }
+}
+
+fn autostart_command() -> Option<String> {
+    std::env::current_exe()
+        .ok()
+        .map(|p| format!("\"{}\"", p.display()))
+}
+
+/// 目前執行環境是否支援以登錄檔設定開機自動啟動（MSIX 封裝版不支援）
+pub fn is_autostart_supported() -> bool {
+    !autostart_reg::is_packaged()
+}
+
+/// 查詢是否已啟用 Windows 開機自動啟動（讀取 HKCU\...\Run 中的 "Stock TW" 機碼）
+pub fn is_windows_autostart_enabled() -> bool {
+    autostart_reg::read_command().is_some()
+}
+
+/// 設定或取消 Windows 開機自動啟動；啟用時一律以目前執行檔路徑覆寫，
+/// 以修正搬移安裝目錄或從開發路徑執行後遺留的失效路徑。回傳是否成功。
+pub fn set_windows_autostart(enabled: bool) -> bool {
+    use autostart_reg::*;
+    let subkey = to_wide(SUBKEY);
+    let val_name = to_wide(VALUE_NAME);
+    unsafe {
+        let mut hkey: Hkey = ptr::null_mut();
+        let status = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            0,
+            ptr::null(),
+            0,
+            KEY_SET_VALUE,
+            ptr::null(),
+            &mut hkey,
+            ptr::null_mut(),
+        );
+        if status != 0 {
+            return false;
+        }
+        let ok = if enabled {
+            match autostart_command() {
+                Some(cmd) => {
+                    let data_w = to_wide(&cmd);
+                    let byte_len = (data_w.len() * std::mem::size_of::<u16>()) as u32;
+                    RegSetValueExW(
+                        hkey,
+                        val_name.as_ptr(),
+                        0,
+                        REG_SZ,
+                        data_w.as_ptr() as *const u8,
+                        byte_len,
+                    ) == 0
+                }
+                None => false,
+            }
+        } else {
+            let del = RegDeleteValueW(hkey, val_name.as_ptr());
+            del == 0 || del == ERROR_FILE_NOT_FOUND
+        };
+        RegCloseKey(hkey);
+        ok
+    }
+}
+
 /// 將數值格式化為帶千分位逗號的字串
 pub fn format_number(val: f64, decimals: usize) -> String {
     let neg = val < 0.0;

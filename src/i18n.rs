@@ -474,6 +474,76 @@ impl Lang {
             Lang::Es => "Siempre visible",
         }
     }
+    pub fn chk_autostart(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "隨 Windows 開機自動啟動",
+            Lang::ZhCn => "随 Windows 开机自动启动",
+            Lang::En => "Launch automatically on Windows startup",
+            Lang::Ja => "Windows 起動時に自動起動する",
+            Lang::Ko => "Windows 시작 시 자동 실행",
+            Lang::Es => "Iniciar automáticamente con Windows",
+        }
+    }
+    pub fn autostart_failed(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "無法更新 Windows 開機自動啟動設定（登錄檔寫入失敗，可能受系統原則限制）。",
+            Lang::ZhCn => "无法更新 Windows 开机自动启动设置（注册表写入失败，可能受系统策略限制）。",
+            Lang::En => "Failed to update the Windows startup setting (registry write failed; it may be restricted by system policy).",
+            Lang::Ja => "Windows 起動時の自動起動設定を更新できませんでした（レジストリ書き込み失敗。ポリシーで制限されている可能性があります）。",
+            Lang::Ko => "Windows 시작 프로그램 설정을 업데이트하지 못했습니다 (레지스트리 쓰기 실패, 시스템 정책 제한 가능).",
+            Lang::Es => "No se pudo actualizar el inicio automático de Windows (error de registro; puede estar restringido por directiva).",
+        }
+    }
+    pub fn autostart_unsupported(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "隨 Windows 開機自動啟動（Microsoft Store 版請至 Windows 設定 > 應用程式 > 啟動 開啟）",
+            Lang::ZhCn => "随 Windows 开机自动启动（Microsoft Store 版请在 Windows 设置 > 应用 > 启动 中开启）",
+            Lang::En => "Launch on Windows startup (Store version: use Windows Settings > Apps > Startup)",
+            Lang::Ja => "Windows 起動時に自動起動（Store 版は 設定 > アプリ > スタートアップ で変更）",
+            Lang::Ko => "Windows 시작 시 자동 실행 (Store 버전: 설정 > 앱 > 시작 프로그램)",
+            Lang::Es => "Inicio con Windows (versión Store: Configuración > Aplicaciones > Inicio)",
+        }
+    }
+    pub fn tab_general(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "一般",
+            Lang::ZhCn => "常规",
+            Lang::En => "General",
+            Lang::Ja => "一般",
+            Lang::Ko => "일반",
+            Lang::Es => "General",
+        }
+    }
+    pub fn tab_appearance(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "外觀",
+            Lang::ZhCn => "外观",
+            Lang::En => "Appearance",
+            Lang::Ja => "外観",
+            Lang::Ko => "외관",
+            Lang::Es => "Apariencia",
+        }
+    }
+    pub fn tab_refresh(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "刷新",
+            Lang::ZhCn => "刷新",
+            Lang::En => "Refresh",
+            Lang::Ja => "更新",
+            Lang::Ko => "새로고침",
+            Lang::Es => "Actualizar",
+        }
+    }
+    pub fn tab_about(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "關於",
+            Lang::ZhCn => "关于",
+            Lang::En => "About",
+            Lang::Ja => "情報",
+            Lang::Ko => "정보",
+            Lang::Es => "Acerca de",
+        }
+    }
     pub fn config_file_label(self) -> &'static str {
         match self {
             Lang::ZhTw => "設定檔：",

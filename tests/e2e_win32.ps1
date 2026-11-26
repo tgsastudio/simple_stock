@@ -109,6 +109,19 @@ if (Test-Path $cfgPath) {
     Remove-Item $cfgPath -Force
 }
 
+$runRegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$runRegName = "Stock TW"
+$origAutoStart = $null
+$hadOrigAutoStart = $false
+try {
+    $regProps = Get-ItemProperty -Path $runRegPath -Name $runRegName -ErrorAction SilentlyContinue
+    if ($null -ne $regProps -and $null -ne $regProps.$runRegName) {
+        $origAutoStart = $regProps.$runRegName
+        $hadOrigAutoStart = $true
+        Remove-ItemProperty -Path $runRegPath -Name $runRegName -ErrorAction SilentlyContinue
+    }
+} catch {}
+
 $proc = $null
 try {
     # 1. 全新啟動（預設 Standard 模式）
@@ -188,10 +201,48 @@ try {
     if (-not (Wait-WindowClosed "StockTW_EditPosDlg_v2" 3000)) { throw "FAIL: Edit Position dialog did not close on Save!" }
     Write-Host "[PASS] 6. Edit Position saved with live preview: '$preview'"
 
-    # 7. 設定對話框（即時檢查 GitHub Release 更新 + 切換語系為英文 + 儲存）
+    # 7. 設定對話框（四分頁切換驗證 + Windows 開機自動啟動寫入/移除 + GitHub 更新檢查 + 切換語系為英文）
     ClickAt $main $c.SetX $c.TopY
     $setDlg = Wait-Window "StockTW_SettingsDlg_v2" 4000
     if ($setDlg -eq [IntPtr]::Zero) { throw "FAIL: Settings dialog did not open!" }
+
+    # 驗證預設開啟於分頁 0（一般）：語系與自動啟動可視，其他分頁控制項隱藏
+    $hLang = [E2EFull.U32]::GetDlgItem($setDlg, 305)
+    $hAuto = [E2EFull.U32]::GetDlgItem($setDlg, 315)
+    $hColor = [E2EFull.U32]::GetDlgItem($setDlg, 306)
+    $hRefresh = [E2EFull.U32]::GetDlgItem($setDlg, 301)
+    $hCheckUpd = [E2EFull.U32]::GetDlgItem($setDlg, 310)
+    if (-not [E2EFull.U32]::IsWindowVisible($hLang) -or -not [E2EFull.U32]::IsWindowVisible($hAuto)) {
+        throw "FAIL: General tab controls should be visible initially!"
+    }
+    if ([E2EFull.U32]::IsWindowVisible($hColor) -or [E2EFull.U32]::IsWindowVisible($hRefresh) -or [E2EFull.U32]::IsWindowVisible($hCheckUpd)) {
+        throw "FAIL: Non-active tab controls should be hidden on General tab!"
+    }
+
+    # 勾選 Windows 自動啟動並切換語系為英文
+    [void][E2EFull.U32]::SendMessageW($hAuto, 0x00F1, [IntPtr]1, [IntPtr]::Zero) # BM_SETCHECK = BST_CHECKED
+    [void][E2EFull.U32]::SendMessageW($hLang, 0x014E, [IntPtr]3, [IntPtr]::Zero) # CB_SETCURSEL = English
+
+    # 切換分頁 1（外觀）
+    [void][E2EFull.U32]::PostMessageW($setDlg, 0x0111, [IntPtr]321, [IntPtr]::Zero) # ID_SET_TAB_APPEARANCE
+    Start-Sleep -Milliseconds 120
+    if (-not [E2EFull.U32]::IsWindowVisible($hColor) -or [E2EFull.U32]::IsWindowVisible($hLang)) {
+        throw "FAIL: Appearance tab switch failed!"
+    }
+
+    # 切換分頁 2（刷新）
+    [void][E2EFull.U32]::PostMessageW($setDlg, 0x0111, [IntPtr]322, [IntPtr]::Zero) # ID_SET_TAB_REFRESH
+    Start-Sleep -Milliseconds 120
+    if (-not [E2EFull.U32]::IsWindowVisible($hRefresh) -or [E2EFull.U32]::IsWindowVisible($hColor)) {
+        throw "FAIL: Refresh tab switch failed!"
+    }
+
+    # 切換分頁 3（關於）並即時檢查 GitHub Release 更新
+    [void][E2EFull.U32]::PostMessageW($setDlg, 0x0111, [IntPtr]323, [IntPtr]::Zero) # ID_SET_TAB_ABOUT
+    Start-Sleep -Milliseconds 120
+    if (-not [E2EFull.U32]::IsWindowVisible($hCheckUpd) -or [E2EFull.U32]::IsWindowVisible($hRefresh)) {
+        throw "FAIL: About tab switch failed!"
+    }
     [void][E2EFull.U32]::PostMessageW($setDlg, 0x0111, [IntPtr]310, [IntPtr]::Zero) # ID_SET_CHECK_UPD
     $updText = ""
     for ($i = 0; $i -lt 50; $i++) {
@@ -200,11 +251,31 @@ try {
         Start-Sleep -Milliseconds 100
     }
     if ($updText -notmatch "v\d+\.\d+\.\d+") { throw "FAIL: GitHub update check did not return version! Got: '$updText'" }
-    $cbLang = [E2EFull.U32]::GetDlgItem($setDlg, 305)
-    [void][E2EFull.U32]::SendMessageW($cbLang, 0x014E, [IntPtr]2, [IntPtr]::Zero) # CB_SETCURSEL = English
+
+    # 儲存設定並驗證 Windows 自動啟動機碼已寫入
     [void][E2EFull.U32]::PostMessageW($setDlg, 0x0111, [IntPtr]313, [IntPtr]::Zero) # ID_SET_SAVE
     if (-not (Wait-WindowClosed "StockTW_SettingsDlg_v2" 3000)) { throw "FAIL: Settings dialog did not close on Save!" }
-    Write-Host "[PASS] 7. Settings saved & GitHub update check succeeded: '$updText'"
+    $regAfterOn = (Get-ItemProperty -Path $runRegPath -Name $runRegName -ErrorAction SilentlyContinue).$runRegName
+    if ([string]::IsNullOrWhiteSpace($regAfterOn)) {
+        throw "FAIL: Windows auto-start registry value was not written on Save!"
+    }
+
+    # 重新開啟設定驗證自動啟動核取狀態，取消勾選並儲存以驗證移除機碼
+    Start-Sleep -Milliseconds 200
+    ClickAt $main $c.SetX $c.TopY
+    $setDlg2 = Wait-Window "StockTW_SettingsDlg_v2" 4000
+    if ($setDlg2 -eq [IntPtr]::Zero) { throw "FAIL: Settings dialog did not reopen!" }
+    $hAuto2 = [E2EFull.U32]::GetDlgItem($setDlg2, 315)
+    $chkState = [int][E2EFull.U32]::SendMessageW($hAuto2, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero) # BM_GETCHECK
+    if ($chkState -ne 1) { throw "FAIL: Auto-start checkbox did not reflect enabled registry state (got $chkState)!" }
+    [void][E2EFull.U32]::SendMessageW($hAuto2, 0x00F1, [IntPtr]0, [IntPtr]::Zero) # BM_SETCHECK = BST_UNCHECKED
+    [void][E2EFull.U32]::PostMessageW($setDlg2, 0x0111, [IntPtr]313, [IntPtr]::Zero) # ID_SET_SAVE
+    if (-not (Wait-WindowClosed "StockTW_SettingsDlg_v2" 3000)) { throw "FAIL: Settings dialog did not close on second Save!" }
+    $regAfterOff = (Get-ItemProperty -Path $runRegPath -Name $runRegName -ErrorAction SilentlyContinue).$runRegName
+    if (-not [string]::IsNullOrWhiteSpace($regAfterOff)) {
+        throw "FAIL: Windows auto-start registry value was not removed when unchecked!"
+    }
+    Write-Host "[PASS] 7. Settings 4-tab switch, Windows auto-start toggle (ON/OFF), & GitHub update check succeeded: '$updText'"
 
     # 8. 篩選分頁（台股 / 美股 / 全部）、排序切換與立即刷新
     $filterY = (& $sc 8) + (& $sc 24) + (& $sc 12) + (& $sc 12)
@@ -274,4 +345,11 @@ finally {
         Copy-Item $backupPath $cfgPath -Force
         Remove-Item $backupPath -Force -ErrorAction SilentlyContinue
     }
+    try {
+        if ($hadOrigAutoStart) {
+            Set-ItemProperty -Path $runRegPath -Name $runRegName -Value $origAutoStart -ErrorAction SilentlyContinue
+        } else {
+            Remove-ItemProperty -Path $runRegPath -Name $runRegName -ErrorAction SilentlyContinue
+        }
+    } catch {}
 }

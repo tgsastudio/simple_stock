@@ -9,8 +9,9 @@ use crate::i18n::{Lang, resolve_lang};
 use crate::quote::{SearchResult, guess_market, search_symbols};
 use crate::updater::{UpdateCheckResult, check_for_updates};
 use crate::win32_util::{
-    apply_dark_title_bar, font_regular, format_number, format_shares, open_url_in_browser, rgb,
-    to_wide, virtual_screen_bounds,
+    apply_dark_title_bar, font_regular, font_semibold, format_number, format_shares,
+    is_autostart_supported, is_windows_autostart_enabled, open_url_in_browser, rgb, set_windows_autostart, to_wide,
+    virtual_screen_bounds,
 };
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,23 +19,25 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, HBRUSH, HDC, HFONT, SetBkColor, SetBkMode,
+    CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW,
+    FillRect, HBRUSH, HDC, HFONT, InvalidateRect, SelectObject, SetBkColor, SetBkMode,
     SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CB_ADDSTRING,
-    CB_GETCURSEL, CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetDlgItem, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW,
-    IsDialogMessageW, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBS_NOTIFY, LoadCursorW, MSG,
-    PostMessageW, RegisterClassW, SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
-    WM_CTLCOLORDLG, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND,
-    WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP,
-    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_OWNERDRAW, BS_PUSHBUTTON,
+    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW,
+    DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetDlgItem,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
+    IDC_ARROW, IsDialogMessageW, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBS_NOTIFY,
+    LoadCursorW, MSG, PostMessageW, RegisterClassW, SW_HIDE, SW_SHOW, SendMessageW,
+    MB_ICONWARNING, MB_OK, MessageBoxW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_APP,
+    WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX,
+    WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_ERASEBKGND, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION,
+    WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 const WM_APP_DLG_ASYNC: u32 = WM_APP + 10;
@@ -994,7 +997,7 @@ pub fn open_add_stock_dialog(parent: HWND, cfg: &AppConfig) -> Vec<StockItem> {
 }
 
 // ============================================================================
-// 3. 設定對話框（刷新、省電、語系、配色、透明度、GitHub 檢查更新）
+// 3. 設定對話框（分頁介面：一般 / 外觀 / 刷新 / 關於 + Windows 自動啟動）
 // ============================================================================
 
 const ID_SET_REFRESH: i32 = 301;
@@ -1011,17 +1014,138 @@ const ID_SET_UPD_STATUS: i32 = 311;
 const ID_SET_DOWNLOAD: i32 = 312;
 const ID_SET_SAVE: i32 = 313;
 const ID_SET_CANCEL: i32 = 314;
+const ID_SET_AUTOSTART: i32 = 315;
+const ID_SET_TAB_GENERAL: i32 = 320;
+const ID_SET_TAB_APPEARANCE: i32 = 321;
+const ID_SET_TAB_REFRESH: i32 = 322;
+const ID_SET_TAB_ABOUT: i32 = 323;
 
 const OPACITY_STEPS: [f32; 8] = [1.0, 0.92, 0.85, 0.75, 0.65, 0.50, 0.35, 0.25];
 
 struct SettingsState {
     cfg: AppConfig,
     lang: Lang,
+    dark: bool,
+    dpi: u32,
     theme: DlgTheme,
+    tab_font: HFONT,
+    tab_font_active: HFONT,
+    active_tab: usize,
+    tab_btns: [HWND; 4],
+    tab_ctrls: [Vec<HWND>; 4],
+    initial_autostart: bool,
+    autostart_supported: bool,
     saved: bool,
     done: AtomicBool,
     update_rx: Option<Receiver<Result<UpdateCheckResult, String>>>,
     download_url: Option<String>,
+}
+
+fn switch_settings_tab(st: &mut SettingsState, tab: usize) {
+    if tab >= 4 {
+        return;
+    }
+    st.active_tab = tab;
+    unsafe {
+        for (i, ctrls) in st.tab_ctrls.iter().enumerate() {
+            let cmd = if i == tab { SW_SHOW } else { SW_HIDE };
+            for &h in ctrls {
+                if !h.is_null() {
+                    ShowWindow(h, cmd);
+                }
+            }
+        }
+        for &tb in &st.tab_btns {
+            if !tb.is_null() {
+                InvalidateRect(tb, ptr::null(), 0);
+            }
+        }
+    }
+}
+
+fn draw_settings_tab(st: &SettingsState, dis: &DRAWITEMSTRUCT, tab_idx: usize) {
+    let is_active = tab_idx == st.active_tab;
+    let is_pressed = (dis.itemState & ODS_SELECTED) != 0;
+    let (bg_col, txt_col, accent_col) = if st.dark {
+        (
+            if is_active {
+                rgb(38, 46, 62)
+            } else if is_pressed {
+                rgb(32, 39, 52)
+            } else {
+                rgb(24, 29, 39)
+            },
+            if is_active {
+                rgb(238, 244, 255)
+            } else {
+                rgb(154, 166, 188)
+            },
+            rgb(78, 161, 255),
+        )
+    } else {
+        (
+            if is_active {
+                rgb(255, 255, 255)
+            } else if is_pressed {
+                rgb(234, 240, 249)
+            } else {
+                rgb(246, 248, 252)
+            },
+            if is_active {
+                rgb(22, 92, 192)
+            } else {
+                rgb(94, 104, 122)
+            },
+            rgb(28, 110, 214),
+        )
+    };
+
+    let label = match tab_idx {
+        0 => st.lang.tab_general(),
+        1 => st.lang.tab_appearance(),
+        2 => st.lang.tab_refresh(),
+        _ => st.lang.tab_about(),
+    };
+
+    unsafe {
+        let hdc = dis.hDC;
+        let rc = dis.rcItem;
+        let bg_brush = CreateSolidBrush(bg_col);
+        FillRect(hdc, &rc, bg_brush);
+        DeleteObject(bg_brush as _);
+
+        if is_active {
+            let bar_h = sc(st.dpi, 2).max(2);
+            let bar_rc = RECT {
+                left: rc.left + sc(st.dpi, 6),
+                top: rc.bottom - bar_h,
+                right: rc.right - sc(st.dpi, 6),
+                bottom: rc.bottom,
+            };
+            let accent_brush = CreateSolidBrush(accent_col);
+            FillRect(hdc, &bar_rc, accent_brush);
+            DeleteObject(accent_brush as _);
+        }
+
+        let font = if is_active {
+            st.tab_font_active
+        } else {
+            st.tab_font
+        };
+        let old_font = SelectObject(hdc, font as _);
+        SetBkMode(hdc, TRANSPARENT as i32);
+        SetTextColor(hdc, txt_col);
+        let mut txt_rc = rc;
+        let w = to_wide(label);
+        DrawTextW(
+            hdc,
+            w.as_ptr(),
+            (w.len() as i32) - 1,
+            &mut txt_rc,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        SelectObject(hdc, old_font);
+    }
 }
 
 unsafe extern "system" fn settings_wndproc(
@@ -1036,11 +1160,54 @@ unsafe extern "system" fn settings_wndproc(
     }
     let st = unsafe { &mut *ptr };
 
+    if msg == WM_ERASEBKGND {
+        let hdc = wparam as HDC;
+        unsafe {
+            let mut rc: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut rc);
+            FillRect(hdc, &rc, st.theme.bg_brush);
+            let div_col = if st.dark {
+                rgb(46, 54, 72)
+            } else {
+                rgb(216, 222, 232)
+            };
+            let div_brush = CreateSolidBrush(div_col);
+            let div_h = sc(st.dpi, 1).max(1);
+            let top_div = RECT {
+                left: sc(st.dpi, 16),
+                top: sc(st.dpi, 42),
+                right: rc.right - sc(st.dpi, 16),
+                bottom: sc(st.dpi, 42) + div_h,
+            };
+            FillRect(hdc, &top_div, div_brush);
+            let bot_div = RECT {
+                left: sc(st.dpi, 16),
+                top: sc(st.dpi, 194),
+                right: rc.right - sc(st.dpi, 16),
+                bottom: sc(st.dpi, 194) + div_h,
+            };
+            FillRect(hdc, &bot_div, div_brush);
+            DeleteObject(div_brush as _);
+        }
+        return 1;
+    }
+
     if let Some(res) = st.theme.handle_color_msg(hwnd, msg, wparam) {
         return res;
     }
 
     match msg {
+        WM_DRAWITEM => {
+            if lparam != 0 {
+                let dis = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
+                let id = dis.CtlID as i32;
+                if (ID_SET_TAB_GENERAL..=ID_SET_TAB_ABOUT).contains(&id) {
+                    draw_settings_tab(st, dis, (id - ID_SET_TAB_GENERAL) as usize);
+                    return 1;
+                }
+            }
+            0
+        }
         WM_APP_DLG_ASYNC => {
             if let Some(rx) = &st.update_rx {
                 if let Ok(res) = rx.try_recv() {
@@ -1075,7 +1242,9 @@ unsafe extern "system" fn settings_wndproc(
         }
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as i32;
-            if id == ID_SET_CHECK_UPD {
+            if (ID_SET_TAB_GENERAL..=ID_SET_TAB_ABOUT).contains(&id) {
+                switch_settings_tab(st, (id - ID_SET_TAB_GENERAL) as usize);
+            } else if id == ID_SET_CHECK_UPD {
                 if st.update_rx.is_none() {
                     set_ctrl_text(hwnd, ID_SET_UPD_STATUS, st.lang.update_checking());
                     let (tx, rx) = mpsc::channel();
@@ -1134,6 +1303,21 @@ unsafe extern "system" fn settings_wndproc(
 
                 st.cfg.dark_mode = is_checked(hwnd, ID_SET_DARK);
                 st.cfg.always_on_top = is_checked(hwnd, ID_SET_TOP);
+
+                // 啟用時一律重寫（修正失效路徑）；停用時僅在原本已啟用才移除
+                if st.autostart_supported {
+                    let new_autostart = is_checked(hwnd, ID_SET_AUTOSTART);
+                    if (new_autostart || st.initial_autostart != new_autostart)
+                        && !set_windows_autostart(new_autostart)
+                    {
+                        let msg = to_wide(st.lang.autostart_failed());
+                        let ttl = to_wide(st.lang.settings_title());
+                        unsafe {
+                            MessageBoxW(hwnd, msg.as_ptr(), ttl.as_ptr(), MB_OK | MB_ICONWARNING);
+                        }
+                    }
+                }
+
                 st.saved = true;
                 st.done.store(true, Ordering::Release);
             } else if id == ID_SET_CANCEL || id == IDCANCEL {
@@ -1149,7 +1333,7 @@ unsafe extern "system" fn settings_wndproc(
     }
 }
 
-/// 開啟「設定」對話框
+/// 開啟「設定」對話框（四個分頁：一般 / 外觀 / 刷新 / 關於）
 pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> {
     let lang = resolve_lang(cfg.language);
     let dpi = dpi_of(parent);
@@ -1168,7 +1352,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
     }
 
     let dlg_w = sc(dpi, 460);
-    let dlg_h = sc(dpi, 488);
+    let dlg_h = sc(dpi, 286);
     let (px, py) = center_pos(parent, dlg_w, dlg_h);
     let title = to_wide(lang.settings_title());
 
@@ -1194,87 +1378,57 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
     apply_dark_title_bar(dlg, cfg.dark_mode);
     let dark = cfg.dark_mode;
     let font = font_regular(sc(dpi, 13));
+    let font_semi = font_semibold(sc(dpi, 13));
     let small_font = font_regular(sc(dpi, 12));
 
-    create_ctrl(dlg, dpi, dark, "STATIC", lang.sec_refresh(), SS_NOPREFIX, 18, 16, 150, 22, 0, font);
-    let cb_ref = create_ctrl(
-        dlg,
-        dpi,
-        dark,
-        "COMBOBOX",
-        "",
-        CBS_DROPDOWNLIST as u32 | WS_TABSTOP | WS_VSCROLL,
-        178,
-        13,
-        248,
-        180,
-        ID_SET_REFRESH,
-        font,
-    );
-    let modes = RefreshMode::all();
-    let mut cur_ref = 1usize;
-    for (i, m) in modes.iter().enumerate() {
-        let w = to_wide(lang.refresh_label(*m));
-        unsafe {
-            SendMessageW(cb_ref, CB_ADDSTRING, 0, w.as_ptr() as isize);
-        }
-        if *m == cfg.refresh_mode {
-            cur_ref = i;
-        }
+    // 頂部分頁列（一般 / 外觀 / 刷新 / 關於）
+    let tab_labels = [
+        lang.tab_general(),
+        lang.tab_appearance(),
+        lang.tab_refresh(),
+        lang.tab_about(),
+    ];
+    let tab_ids = [
+        ID_SET_TAB_GENERAL,
+        ID_SET_TAB_APPEARANCE,
+        ID_SET_TAB_REFRESH,
+        ID_SET_TAB_ABOUT,
+    ];
+    let mut tab_btns = [ptr::null_mut(); 4];
+    for i in 0..4 {
+        tab_btns[i] = create_ctrl(
+            dlg,
+            dpi,
+            dark,
+            "BUTTON",
+            tab_labels[i],
+            BS_OWNERDRAW as u32 | WS_TABSTOP,
+            16 + (i as i32) * 104,
+            10,
+            98,
+            28,
+            tab_ids[i],
+            font,
+        );
     }
-    unsafe {
-        SendMessageW(cb_ref, CB_SETCURSEL, cur_ref, 0);
-    }
 
-    create_ctrl(
+    let mut tab_ctrls: [Vec<HWND>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+
+    // --- Tab 0: 一般（語系、視窗置頂、開機自動啟動）---
+    tab_ctrls[0].push(create_ctrl(
         dlg,
         dpi,
         dark,
-        "BUTTON",
-        lang.chk_smart_hours(),
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        "STATIC",
+        lang.label_language(),
+        SS_NOPREFIX,
         18,
-        48,
-        408,
-        24,
-        ID_SET_SMART_HRS,
+        61,
+        150,
+        22,
+        0,
         font,
-    );
-    set_checked(dlg, ID_SET_SMART_HRS, cfg.smart_market_hours);
-
-    create_ctrl(
-        dlg,
-        dpi,
-        dark,
-        "BUTTON",
-        lang.chk_pause_min(),
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        18,
-        76,
-        408,
-        24,
-        ID_SET_PAUSE_MIN,
-        font,
-    );
-    set_checked(dlg, ID_SET_PAUSE_MIN, cfg.pause_when_minimized);
-
-    create_ctrl(
-        dlg,
-        dpi,
-        dark,
-        "BUTTON",
-        lang.chk_us_ext(),
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        18,
-        104,
-        408,
-        24,
-        ID_SET_US_EXT,
-        font,
-    );
-    set_checked(dlg, ID_SET_US_EXT, cfg.include_us_extended);
-
-    create_ctrl(dlg, dpi, dark, "STATIC", lang.label_language(), SS_NOPREFIX, 18, 140, 150, 22, 0, font);
+    ));
     let cb_lang = create_ctrl(
         dlg,
         dpi,
@@ -1283,12 +1437,13 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         "",
         CBS_DROPDOWNLIST as u32 | WS_TABSTOP | WS_VSCROLL,
         178,
-        137,
+        58,
         248,
         200,
         ID_SET_LANG,
         font,
     );
+    tab_ctrls[0].push(cb_lang);
     for ls in [
         LanguageSetting::Auto,
         LanguageSetting::ZhTw,
@@ -1316,7 +1471,52 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         SendMessageW(cb_lang, CB_SETCURSEL, cur_lang, 0);
     }
 
-    create_ctrl(
+    tab_ctrls[0].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "BUTTON",
+        lang.chk_always_on_top(),
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        18,
+        98,
+        408,
+        24,
+        ID_SET_TOP,
+        font,
+    ));
+    set_checked(dlg, ID_SET_TOP, cfg.always_on_top);
+
+    let autostart_supported = is_autostart_supported();
+    let initial_autostart = autostart_supported && is_windows_autostart_enabled();
+    let chk_autostart = create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "BUTTON",
+        if autostart_supported {
+            lang.chk_autostart()
+        } else {
+            lang.autostart_unsupported()
+        },
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        18,
+        130,
+        408,
+        24,
+        ID_SET_AUTOSTART,
+        font,
+    );
+    tab_ctrls[0].push(chk_autostart);
+    set_checked(dlg, ID_SET_AUTOSTART, initial_autostart);
+    if !autostart_supported {
+        unsafe {
+            EnableWindow(chk_autostart, 0);
+        }
+    }
+
+    // --- Tab 1: 外觀（漲跌配色、浮動透明度、深色主題）---
+    tab_ctrls[1].push(create_ctrl(
         dlg,
         dpi,
         dark,
@@ -1324,12 +1524,12 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         lang.label_color_scheme(),
         SS_NOPREFIX,
         18,
-        174,
+        61,
         150,
         22,
         0,
         font,
-    );
+    ));
     let cb_col = create_ctrl(
         dlg,
         dpi,
@@ -1338,12 +1538,13 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         "",
         CBS_DROPDOWNLIST as u32 | WS_TABSTOP | WS_VSCROLL,
         178,
-        171,
+        58,
         248,
         120,
         ID_SET_COLOR,
         font,
     );
+    tab_ctrls[1].push(cb_col);
     for cs in [
         ColorScheme::TwRedUp,
         ColorScheme::UsGreenUp,
@@ -1363,7 +1564,20 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         SendMessageW(cb_col, CB_SETCURSEL, cur_col, 0);
     }
 
-    create_ctrl(dlg, dpi, dark, "STATIC", lang.slider_opacity(), SS_NOPREFIX, 18, 208, 150, 22, 0, font);
+    tab_ctrls[1].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "STATIC",
+        lang.slider_opacity(),
+        SS_NOPREFIX,
+        18,
+        97,
+        150,
+        22,
+        0,
+        font,
+    ));
     let cb_op = create_ctrl(
         dlg,
         dpi,
@@ -1372,12 +1586,13 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         "",
         CBS_DROPDOWNLIST as u32 | WS_TABSTOP | WS_VSCROLL,
         178,
-        205,
+        94,
         248,
         160,
         ID_SET_OPACITY,
         font,
     );
+    tab_ctrls[1].push(cb_op);
     let mut best_op_idx = 0usize;
     let mut best_diff = f32::MAX;
     for (i, &val) in OPACITY_STEPS.iter().enumerate() {
@@ -1396,7 +1611,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         SendMessageW(cb_op, CB_SETCURSEL, best_op_idx, 0);
     }
 
-    create_ctrl(
+    tab_ctrls[1].push(create_ctrl(
         dlg,
         dpi,
         dark,
@@ -1404,64 +1619,124 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         lang.chk_dark(),
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
         18,
-        242,
-        180,
+        134,
+        408,
         24,
         ID_SET_DARK,
         font,
-    );
+    ));
     set_checked(dlg, ID_SET_DARK, cfg.dark_mode);
 
-    create_ctrl(
+    // --- Tab 2: 刷新（刷新頻率、開盤感知、最小化暫停、美股盤前盤後）---
+    tab_ctrls[2].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "STATIC",
+        lang.sec_refresh(),
+        SS_NOPREFIX,
+        18,
+        61,
+        150,
+        22,
+        0,
+        font,
+    ));
+    let cb_ref = create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "COMBOBOX",
+        "",
+        CBS_DROPDOWNLIST as u32 | WS_TABSTOP | WS_VSCROLL,
+        178,
+        58,
+        248,
+        180,
+        ID_SET_REFRESH,
+        font,
+    );
+    tab_ctrls[2].push(cb_ref);
+    let modes = RefreshMode::all();
+    let mut cur_ref = 1usize;
+    for (i, m) in modes.iter().enumerate() {
+        let w = to_wide(lang.refresh_label(*m));
+        unsafe {
+            SendMessageW(cb_ref, CB_ADDSTRING, 0, w.as_ptr() as isize);
+        }
+        if *m == cfg.refresh_mode {
+            cur_ref = i;
+        }
+    }
+    unsafe {
+        SendMessageW(cb_ref, CB_SETCURSEL, cur_ref, 0);
+    }
+
+    tab_ctrls[2].push(create_ctrl(
         dlg,
         dpi,
         dark,
         "BUTTON",
-        lang.chk_always_on_top(),
+        lang.chk_smart_hours(),
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-        208,
-        242,
-        218,
+        18,
+        94,
+        408,
         24,
-        ID_SET_TOP,
+        ID_SET_SMART_HRS,
         font,
-    );
-    set_checked(dlg, ID_SET_TOP, cfg.always_on_top);
+    ));
+    set_checked(dlg, ID_SET_SMART_HRS, cfg.smart_market_hours);
 
-    // 加密提示與路徑（使用小字體 + 充裕高度 + 路徑省略號，確保絕不裁切文字）
-    create_ctrl(
+    tab_ctrls[2].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "BUTTON",
+        lang.chk_pause_min(),
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        18,
+        122,
+        408,
+        24,
+        ID_SET_PAUSE_MIN,
+        font,
+    ));
+    set_checked(dlg, ID_SET_PAUSE_MIN, cfg.pause_when_minimized);
+
+    tab_ctrls[2].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "BUTTON",
+        lang.chk_us_ext(),
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        18,
+        150,
+        408,
+        24,
+        ID_SET_US_EXT,
+        font,
+    ));
+    set_checked(dlg, ID_SET_US_EXT, cfg.include_us_extended);
+
+    // --- Tab 3: 關於（版本、檢查更新、DPAPI 加密提示、設定檔路徑）---
+    let ver_str = format!("Stock TW v{}", env!("CARGO_PKG_VERSION"));
+    tab_ctrls[3].push(create_ctrl(
         dlg,
         dpi,
         dark,
         "STATIC",
-        lang.dpapi_encrypted_note(),
+        &ver_str,
         SS_NOPREFIX,
         18,
-        278,
-        408,
-        34,
-        0,
-        small_font,
-    );
-    let cfg_path_str = format!("{}{}", lang.config_file_label(), AppConfig::config_path().display());
-    create_ctrl(
-        dlg,
-        dpi,
-        dark,
-        "STATIC",
-        &cfg_path_str,
-        SS_PATHELLIPSIS | SS_NOPREFIX,
-        18,
-        314,
-        408,
+        61,
+        140,
         22,
         0,
-        small_font,
-    );
-
-    let ver_str = format!("Stock TW v{}", env!("CARGO_PKG_VERSION"));
-    create_ctrl(dlg, dpi, dark, "STATIC", &ver_str, SS_NOPREFIX, 18, 350, 140, 22, 0, font);
-    create_ctrl(
+        font,
+    ));
+    tab_ctrls[3].push(create_ctrl(
         dlg,
         dpi,
         dark,
@@ -1469,12 +1744,12 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         lang.btn_check_update(),
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         234,
-        347,
+        58,
         92,
         26,
         ID_SET_CHECK_UPD,
         font,
-    );
+    ));
     let btn_dl = create_ctrl(
         dlg,
         dpi,
@@ -1483,7 +1758,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         lang.btn_download_update(),
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         334,
-        347,
+        58,
         92,
         26,
         ID_SET_DOWNLOAD,
@@ -1492,8 +1767,56 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
     unsafe {
         EnableWindow(btn_dl, 0);
     }
-    create_ctrl(dlg, dpi, dark, "STATIC", "", SS_NOPREFIX, 18, 380, 408, 22, ID_SET_UPD_STATUS, small_font);
+    tab_ctrls[3].push(btn_dl);
+    tab_ctrls[3].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "STATIC",
+        "",
+        SS_NOPREFIX,
+        18,
+        92,
+        408,
+        22,
+        ID_SET_UPD_STATUS,
+        small_font,
+    ));
+    tab_ctrls[3].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "STATIC",
+        lang.dpapi_encrypted_note(),
+        SS_NOPREFIX,
+        18,
+        118,
+        408,
+        34,
+        0,
+        small_font,
+    ));
+    let cfg_path_str = format!(
+        "{}{}",
+        lang.config_file_label(),
+        AppConfig::config_path().display()
+    );
+    tab_ctrls[3].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "STATIC",
+        &cfg_path_str,
+        SS_PATHELLIPSIS | SS_NOPREFIX,
+        18,
+        156,
+        408,
+        22,
+        0,
+        small_font,
+    ));
 
+    // 底部操作按鈕（跨分頁固定顯示）
     create_ctrl(
         dlg,
         dpi,
@@ -1502,7 +1825,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         lang.btn_save(),
         BS_DEFPUSHBUTTON as u32 | WS_TABSTOP,
         250,
-        412,
+        206,
         84,
         26,
         ID_SET_SAVE,
@@ -1516,7 +1839,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         lang.btn_cancel(),
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         342,
-        412,
+        206,
         84,
         26,
         ID_SET_CANCEL,
@@ -1526,12 +1849,22 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
     let mut state = Box::new(SettingsState {
         cfg: cfg.clone(),
         lang,
+        dark,
+        dpi,
         theme: DlgTheme::new(cfg.dark_mode),
+        tab_font: font,
+        tab_font_active: font_semi,
+        active_tab: 0,
+        tab_btns,
+        tab_ctrls,
+        initial_autostart,
+        autostart_supported,
         saved: false,
         done: AtomicBool::new(false),
         update_rx: None,
         download_url: None,
     });
+    switch_settings_tab(&mut state, 0);
 
     unsafe {
         SetWindowLongPtrW(dlg, GWLP_USERDATA, (&mut *state as *mut SettingsState) as isize);
@@ -1541,6 +1874,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
     state.theme.destroy();
     unsafe {
         DeleteObject(font as _);
+        DeleteObject(font_semi as _);
         DeleteObject(small_font as _);
     }
     if state.saved {

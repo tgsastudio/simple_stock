@@ -29,6 +29,7 @@
   - 內建台美股開盤時段感知（休市自動停止輪詢）、視窗最小化自動暫停、以及網路異常自動退避。
 - **安全性與六國多語系**：
   - 所有自選股與持股成本皆透過 **Windows 原生 DPAPI (`CryptProtectData`) + 應用程式專屬熵值** 加密儲存於 `config.dat`，防止其他程式或使用者讀取。
+  - 分頁式設定介面（一般 / 外觀 / 刷新 / 關於），支援一鍵切換 **隨 Windows 開機自動啟動**。
   - 支援 **繁體中文 / 简体中文 / English / 日本語 / 한국어 / Español** 六種語言即時切換（預設自動跟隨 Windows 作業系統語言），並內建 **檢查更新** 功能自動比對 GitHub Releases。
 
 ## 建置與測試（開發者）
@@ -53,7 +54,7 @@ ISCC.exe installer\simple_stock.iss
 1. 點擊提示視窗中的 **「其他資訊（More info）」** → **「仍要執行（Run anyway）」** 即可正常安裝。
 2. 每次 GitHub Release 皆由 GitHub Actions 公開原始碼自動編譯打包，並隨附 `SHA256SUMS.txt`，您可在 PowerShell 中驗證下載檔案完整性：
    ```powershell
-   Get-FileHash .\StockTW-Setup-x64-v1.2.1.exe -Algorithm SHA256
+   Get-FileHash .\StockTW-Setup-x64-v1.3.0.exe -Algorithm SHA256
    ```
 
 ## Privacy Notice & License
