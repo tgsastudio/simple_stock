@@ -12,7 +12,7 @@ use chrono::Utc;
 use crate::quote::QuoteData;
 use crate::win32_util::{
     apply_dark_title_bar, font_bold, font_regular, font_semibold, format_number, format_shares,
-    rgb, to_wide, virtual_screen_bounds,
+    rgb, set_prevent_sleep, to_wide, virtual_screen_bounds,
 };
 use crate::worker::{QuoteWorker, WM_APP_WORKER_EVENT, WorkerCommand, WorkerEvent, WorkerStatus};
 use std::collections::HashMap;
@@ -48,6 +48,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_LAYERED, WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
 
+const WM_ACTIVATE: u32 = 0x0006;
+const WM_SETFOCUS: u32 = 0x0007;
+const WM_KILLFOCUS: u32 = 0x0008;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
 
@@ -161,6 +164,8 @@ struct AppState {
     dragging_idx: Option<usize>,
     tracking_mouse: bool,
     last_minimized: bool,
+    is_focused: bool,
+    preventing_sleep: bool,
 }
 
 impl AppState {
@@ -183,6 +188,16 @@ impl AppState {
     fn repaint(&self) {
         unsafe {
             InvalidateRect(self.hwnd, ptr::null(), 0);
+        }
+    }
+
+    /// 僅在「標準模式且視窗為聚焦（未最小化）狀態」下防止電腦與螢幕進入休眠
+    fn sync_keep_awake(&mut self) {
+        let should_prevent =
+            self.config.view_mode == ViewMode::Standard && self.is_focused && !self.last_minimized;
+        if should_prevent != self.preventing_sleep {
+            self.preventing_sleep = should_prevent;
+            set_prevent_sleep(should_prevent);
         }
     }
 
@@ -1507,10 +1522,26 @@ unsafe extern "system" fn main_wndproc(
             mmi.ptMinTrackSize.y = st.sc(200);
             0
         }
+        WM_ACTIVATE => {
+            st.is_focused = (wparam & 0xFFFF) != 0;
+            st.sync_keep_awake();
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_SETFOCUS => {
+            st.is_focused = true;
+            st.sync_keep_awake();
+            0
+        }
+        WM_KILLFOCUS => {
+            st.is_focused = false;
+            st.sync_keep_awake();
+            0
+        }
         WM_SIZE => {
             let is_min = wparam == SIZE_MINIMIZED as usize;
             if is_min != st.last_minimized {
                 st.last_minimized = is_min;
+                st.sync_keep_awake();
                 if let Some(w) = &st.worker {
                     let _ = w.tx.send(WorkerCommand::SetMinimized(is_min));
                 }
@@ -1614,6 +1645,7 @@ unsafe extern "system" fn main_wndproc(
                             st.config.always_on_top = true;
                         }
                         st.apply_window_style(true);
+                        st.sync_keep_awake();
                         st.save_and_sync();
                         st.repaint();
                     }
@@ -1713,6 +1745,10 @@ unsafe extern "system" fn main_wndproc(
             0
         }
         WM_DESTROY => {
+            if st.preventing_sleep {
+                st.preventing_sleep = false;
+                set_prevent_sleep(false);
+            }
             if let Some(w) = &st.worker {
                 let _ = w.tx.send(WorkerCommand::Shutdown);
             }
@@ -1800,6 +1836,8 @@ pub fn run_win32_app() {
             dragging_idx: None,
             tracking_mouse: false,
             last_minimized: false,
+            is_focused: false,
+            preventing_sleep: false,
         });
 
         state.worker = Some(QuoteWorker::spawn(initial_cfg, hwnd as usize));

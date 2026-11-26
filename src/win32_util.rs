@@ -280,6 +280,25 @@ pub fn set_windows_autostart(enabled: bool) -> bool {
     }
 }
 
+/// 設定或解除防止系統與螢幕進入休眠（透過 Windows `SetThreadExecutionState`）
+pub fn set_prevent_sleep(prevent: bool) {
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+    const ES_DISPLAY_REQUIRED: u32 = 0x0000_0002;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetThreadExecutionState(es_flags: u32) -> u32;
+    }
+    let flags = if prevent {
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    } else {
+        ES_CONTINUOUS
+    };
+    unsafe {
+        SetThreadExecutionState(flags);
+    }
+}
+
 /// 將數值格式化為帶千分位逗號的字串
 pub fn format_number(val: f64, decimals: usize) -> String {
     let neg = val < 0.0;
