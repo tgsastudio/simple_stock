@@ -1,3 +1,6 @@
+//! Stock TW 程式進入點
+//! 負責建立 Windows 具名 Mutex（供安裝升級偵測）、還原上次視窗位置與大小並啟動 egui 主視窗。
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;

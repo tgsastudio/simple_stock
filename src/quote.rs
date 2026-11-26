@@ -1,3 +1,7 @@
+//! 免登入即時報價抓取引擎
+//! - 台股：優先透過證交所/櫃買中心公開即時 API 單次批次查詢，查無資料時自動切換 Yahoo Finance 備援。
+//! - 美股：透過 Yahoo Finance v8 chart 公開端點查詢（無需登入或 crumb）。
+
 use crate::config::{Market, StockItem};
 use chrono::Local;
 use serde_json::Value;

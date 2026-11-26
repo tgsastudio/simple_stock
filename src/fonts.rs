@@ -1,3 +1,6 @@
+//! 系統中文字型動態載入模組
+//! 啟動時動態讀取 Windows 內建微軟正黑體，避免將龐大字型檔打包進執行檔。
+
 use egui::{FontData, FontDefinitions, FontFamily};
 use std::fs;
 use std::sync::Arc;

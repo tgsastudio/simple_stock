@@ -1,3 +1,7 @@
+//! Stock TW 主畫面介面模組（egui）
+//! 包含標準 / 側邊條 / 透明浮動三種模式、自選股拖曳排序、持股成本與收益計算、
+//! 新增自選股線上搜尋、設定面板與 GitHub Release 自動更新檢查。
+
 use crate::config::{
     AppConfig, ColorScheme, LanguageSetting, Market, MarketFilter, RefreshMode, SortDisplay,
     StockItem, ViewMode, WindowRect,

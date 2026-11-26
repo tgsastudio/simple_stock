@@ -1,10 +1,13 @@
-//! Secure local storage using Windows DPAPI (CryptProtectData / CryptUnprotectData)
-//! with application-specific entropy so other programs or users cannot read saved holdings.
+//! 安全本機儲存模組
+//! 使用 Windows 原生 DPAPI (`CryptProtectData` / `CryptUnprotectData`) 搭配應用程式專屬熵值，
+//! 確保自選股與持股成本在磁碟上為密文，防止其他使用者或其他程式讀取。
 
 use std::fs;
 use std::path::Path;
 
+/// 加密檔案識別檔頭（用於辨識合法的 Stock TW 加密設定檔）
 const MAGIC_HEADER: &[u8; 5] = b"SSTK\x01";
+/// 應用程式專屬額外熵值（即使其他程式同帳號呼叫 DPAPI，缺少此熵值仍無法解密）
 const APP_ENTROPY: &[u8] = b"simple_stock::tgsastudio::dpapi::v1::#9F4A7C2E";
 
 #[cfg(target_os = "windows")]

@@ -1,3 +1,6 @@
+//! 視窗標題列與工作列圖示產生模組
+//! 產生與 assets/icon.ico 一致的 64x64 喜氣紅漸層上升趨勢箭頭 RGBA 圖示。
+
 use egui::IconData;
 
 fn dist_to_segment(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {

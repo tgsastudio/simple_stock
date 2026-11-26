@@ -1,3 +1,6 @@
+//! 台股與美股開盤時段偵測模組
+//! 用於智慧省電：非開盤時段自動停止背景輪詢，減少網路喚醒與電力消耗。
+
 use chrono::{Datelike, FixedOffset, Timelike, Utc, Weekday};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

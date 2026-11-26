@@ -1,3 +1,6 @@
+//! 背景報價輪詢執行緒
+//! 依照刷新頻率、台美股開盤時段與視窗最小化狀態，在背景批次抓取報價並於有更新時喚醒介面重繪。
+
 use crate::config::{AppConfig, Market, StockItem};
 use crate::market_hours::current_market_status;
 use crate::quote::{QuoteData, build_agent, fetch_tw_batch, fetch_us_quotes};

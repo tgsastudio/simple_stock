@@ -1,3 +1,6 @@
+//! 多語系模組（繁體中文 / English）
+//! 預設呼叫 Windows 原生 `GetUserDefaultUILanguage()` 自動跟隨作業系統語言。
+
 use crate::config::{ColorScheme, LanguageSetting, RefreshMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

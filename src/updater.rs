@@ -1,3 +1,6 @@
+//! GitHub Releases 自動更新檢查模組
+//! 連線查詢 `tgsastudio/simple_stock` 最新 Release 版本並與目前版本比對。
+
 use crate::quote::build_agent;
 use serde_json::Value;
 

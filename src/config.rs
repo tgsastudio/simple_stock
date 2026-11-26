@@ -1,8 +1,12 @@
+//! 應用程式設定與自選股資料模型
+//! 負責管理自選股清單、持股數量/成本、刷新模式、視窗幾何位置與加密讀寫。
+
 use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// 市場分類（台股 / 美股）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Market {
     Tw,
