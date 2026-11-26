@@ -1,0 +1,74 @@
+name: Release & Code Signing (SignPath)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows Binaries & Installer
+    runs-on: windows-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package Windows installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc /Q installer\simple_stock.iss
+          New-Item -ItemType Directory -Force -Path release_unsigned | Out-Null
+          Copy-Item target\release\simple_stock.exe release_unsigned\StockTW-Portable-x64.exe
+          Copy-Item dist\StockTW-Setup-x64-*.exe release_unsigned\
+
+      - name: Upload unsigned build artifacts
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-tw-unsigned
+          path: release_unsigned/*
+          if-no-files-found: error
+
+  sign-and-release:
+    name: Sign via SignPath & Publish Release
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Submit signing request to SignPath
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: release_signed
+
+      - name: Download unsigned artifacts (fallback before SignPath is enabled)
+        if: ${{ vars.SIGNPATH_ENABLED != 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: stock-tw-unsigned
+          path: release_signed
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_signed/*
+          generate_release_notes: true

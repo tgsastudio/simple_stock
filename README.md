@@ -31,3 +31,12 @@ cargo build --release
 # 使用 Inno Setup 打包 Windows 安裝檔（輸出至 dist/）
 ISCC.exe installer\simple_stock.iss
 ```
+
+## Code Signing Policy & Privacy Notice
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- **Committers & Approvers**: Repository maintainers of `tgsastudio/simple_stock`.
+- **Privacy**: This program will **not** transfer any user information, watchlist, holdings, or personal data to other networked systems. All user preferences and holdings are stored exclusively on the local device and encrypted using Windows DPAPI. The application only performs read-only HTTPS requests to public market quote endpoints (TWSE/TPEx, Yahoo Finance) and GitHub Releases (when manually checking for updates).
+- **License**: Released under the [MIT License](LICENSE).
+
