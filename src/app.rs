@@ -157,7 +157,7 @@ impl StockApp {
             let h = in_r.height();
             let x = out_r.min.x;
             let y = out_r.min.y;
-            if w >= 200.0 && h >= 180.0 && x > -2000.0 && x < 8000.0 && y > -2000.0 && y < 8000.0 {
+            if w >= 200.0 && h >= 180.0 && x >= -100.0 && x < 4000.0 && y >= -100.0 && y < 3000.0 {
                 let rect = WindowRect {
                     x,
                     y,
@@ -1532,6 +1532,7 @@ impl eframe::App for StockApp {
             if self.config.always_on_top {
                 ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
             }
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(ViewportCommand::Focus);
         }

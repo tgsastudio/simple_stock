@@ -31,6 +31,21 @@ fn create_app_mutex() -> *mut core::ffi::c_void {
     unsafe { CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr()) }
 }
 
+#[cfg(target_os = "windows")]
+fn virtual_screen_bounds() -> (f32, f32, f32, f32) {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetSystemMetrics(n_index: i32) -> i32;
+    }
+    unsafe {
+        let x = GetSystemMetrics(76) as f32; // SM_XVIRTUALSCREEN
+        let y = GetSystemMetrics(77) as f32; // SM_YVIRTUALSCREEN
+        let w = GetSystemMetrics(78).max(800) as f32; // SM_CXVIRTUALSCREEN
+        let h = GetSystemMetrics(79).max(600) as f32; // SM_CYVIRTUALSCREEN
+        (x, y, w, h)
+    }
+}
+
 fn main() -> eframe::Result<()> {
     #[cfg(target_os = "windows")]
     let _app_mutex = create_app_mutex();
@@ -39,30 +54,39 @@ fn main() -> eframe::Result<()> {
     let decorations = initial_cfg.view_mode != ViewMode::FloatingWidget;
     let saved_rect = initial_cfg.window_rect_for(initial_cfg.view_mode);
 
+    #[cfg(target_os = "windows")]
+    let (vx, vy, vw, vh) = virtual_screen_bounds();
+    #[cfg(not(target_os = "windows"))]
+    let (vx, vy, vw, vh) = (0.0f32, 0.0f32, 1920.0f32, 1080.0f32);
+
     let (w, h, pos) = if let Some(r) = saved_rect {
-        let valid_pos = if r.x > -2000.0 && r.x < 8000.0 && r.y > -2000.0 && r.y < 8000.0 {
-            Some([r.x, r.y])
+        let clamped_w = r.width.clamp(220.0, (vw - 40.0).max(320.0));
+        let clamped_h = r.height.clamp(200.0, (vh - 40.0).max(260.0));
+        // 確保視窗左上角一定落在目前可視螢幕範圍內，避免跑到螢幕外看起來像一直縮在工作列
+        let in_bounds = r.x >= vx
+            && r.x <= vx + vw - 120.0
+            && r.y >= vy
+            && r.y <= vy + vh - 120.0;
+        let safe_pos = if in_bounds {
+            [r.x, r.y]
         } else {
-            None
+            [120.0, 120.0]
         };
-        (r.width.max(220.0), r.height.max(200.0), valid_pos)
+        (clamped_w, clamped_h, safe_pos)
     } else {
         let [dw, dh] = initial_cfg.view_mode.default_size();
-        (dw, dh, Some([120.0, 120.0]))
+        (dw, dh, [120.0, 120.0])
     };
 
-    let mut vp = egui::ViewportBuilder::default()
+    let vp = egui::ViewportBuilder::default()
         .with_title("Stock TW")
         .with_icon(icon::build_window_icon())
         .with_inner_size([w, h])
         .with_min_inner_size([220.0, 200.0])
+        .with_position(pos)
         .with_decorations(decorations)
         .with_visible(true)
         .with_transparent(true);
-
-    if let Some([px, py]) = pos {
-        vp = vp.with_position([px, py]);
-    }
 
     let options = eframe::NativeOptions {
         viewport: vp,
