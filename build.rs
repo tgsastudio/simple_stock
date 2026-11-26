@@ -30,6 +30,7 @@ fn find_rc_exe() -> Option<PathBuf> {
 fn main() {
     println!("cargo:rerun-if-changed=assets/app.rc");
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=assets/app.manifest");
 
     if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "windows" {
         return;

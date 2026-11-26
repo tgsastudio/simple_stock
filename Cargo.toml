@@ -1,18 +1,27 @@
 [package]
 name = "simple_stock"
-version = "1.0.2"
+version = "1.1.0"
 edition = "2024"
 description = "Lightweight Windows real-time stock dashboard for Taiwan and US markets"
 
 [dependencies]
-eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
-egui = "0.31"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2.10", default-features = false, features = ["json", "native-tls"] }
 native-tls = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 directories = "5"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_Controls",
+] }
 
 [profile.release]
 opt-level = "z"

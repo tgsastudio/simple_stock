@@ -97,8 +97,8 @@ impl ViewMode {
     pub fn default_size(self) -> [f32; 2] {
         match self {
             ViewMode::Standard => [480.0, 560.0],
-            ViewMode::Sidebar => [250.0, 520.0],
-            ViewMode::FloatingWidget => [270.0, 340.0],
+            ViewMode::Sidebar => [275.0, 520.0],
+            ViewMode::FloatingWidget => [290.0, 340.0],
         }
     }
 }

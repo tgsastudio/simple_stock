@@ -1,5 +1,6 @@
 //! 背景報價輪詢執行緒
-//! 依照刷新頻率、台美股開盤時段與視窗最小化狀態，在背景批次抓取報價並於有更新時喚醒介面重繪。
+//! 負責依照使用者設定的刷新頻率、雙市場開盤時段感知與視窗最小化狀態，
+//! 在背景批次抓取台股與美股報價，並在有新資料時透過 Win32 `PostMessageW` 喚醒主視窗重繪。
 
 use crate::config::{AppConfig, Market, StockItem};
 use crate::market_hours::current_market_status;
@@ -8,6 +9,11 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
+
+/// 自訂 Win32 視窗訊息：背景執行緒有新報價或狀態更新時通知主視窗重繪
+pub const WM_APP_WORKER_EVENT: u32 = WM_APP + 1;
 
 pub enum WorkerCommand {
     UpdateConfig(AppConfig),
@@ -36,9 +42,18 @@ pub struct QuoteWorker {
 }
 
 impl QuoteWorker {
-    pub fn spawn(initial_config: AppConfig, egui_ctx: egui::Context) -> Self {
+    /// 啟動背景報價輪詢執行緒，`notify_hwnd` 為接收喚醒訊息的主視窗控制代碼
+    pub fn spawn(initial_config: AppConfig, notify_hwnd: usize) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCommand>();
         let (evt_tx, evt_rx) = mpsc::channel::<WorkerEvent>();
+
+        let wake_ui = move || {
+            if notify_hwnd != 0 {
+                unsafe {
+                    PostMessageW(notify_hwnd as HWND, WM_APP_WORKER_EVENT, 0, 0);
+                }
+            }
+        };
 
         thread::spawn(move || {
             let agent = build_agent();
@@ -79,7 +94,7 @@ impl QuoteWorker {
 
                     if tw_items.is_empty() && us_items.is_empty() {
                         let _ = evt_tx.send(WorkerEvent::Status(WorkerStatus::IdleClosed));
-                        egui_ctx.request_repaint();
+                        wake_ui();
                     } else {
                         let mut merged = HashMap::new();
                         let mut errors = Vec::new();
@@ -110,14 +125,13 @@ impl QuoteWorker {
                         } else {
                             let _ = evt_tx.send(WorkerEvent::Status(WorkerStatus::Updated));
                         }
-                        egui_ctx.request_repaint();
+                        wake_ui();
                     }
 
                     initial_fetch_done = true;
                     last_fetch = Instant::now();
                 }
 
-                // Wait efficiently until next command or next poll tick (max 1s granularity, zero busy-wait)
                 let wait = if minimized && config.pause_when_minimized {
                     Duration::from_secs(5)
                 } else if let Some(base_secs) = interval_secs {
@@ -147,7 +161,6 @@ impl QuoteWorker {
                         let was_min = minimized;
                         minimized = is_min;
                         if was_min && !is_min && config.pause_when_minimized {
-                            // Immediately refresh when restored from minimized
                             initial_fetch_done = false;
                         }
                     }
