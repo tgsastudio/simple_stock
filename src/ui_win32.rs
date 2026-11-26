@@ -670,18 +670,17 @@ impl AppState {
                 );
             }
 
-            // 繪製左側標題文字（自動限制寬度不與右側按鈕重疊）
-            let title_right = (rx - self.sc(4)).max(pad + self.sc(24));
+            // 繪製左側標題文字（所有模式皆完整顯示 Stock TW，自動限制寬度不與右側按鈕重疊）
+            let title_right = (rx - self.sc(4)).max(pad + self.sc(68));
             let title_draw_r = RECT {
                 left: pad,
                 top: y,
                 right: title_right,
                 bottom: y + top_h,
             };
-            let title_txt = if mode == ViewMode::Standard { "Stock TW" } else { "TW" };
             draw_text(
                 mem_dc,
-                title_txt,
+                "Stock TW",
                 &title_draw_r,
                 self.fonts.title,
                 text_primary,
@@ -721,21 +720,21 @@ impl AppState {
             y += self.sc(6);
 
             // ----------------------------------------------------------------
-            // 2. 分頁篩選與排序列（標準模式）
+            // 2. 分頁篩選（所有模式皆可切換全部/台股/美股）與排序列（標準模式）
             // ----------------------------------------------------------------
-            if mode == ViewMode::Standard {
-                let bar_h = self.sc(24);
+            {
+                let bar_h = self.sc(22);
                 let mut fx = pad;
+                let tab_w = self.sc(if is_compact { 42 } else { 48 });
                 for (f, lbl) in [
                     (MarketFilter::All, lang.filter_all()),
                     (MarketFilter::TwOnly, lang.filter_tw()),
                     (MarketFilter::UsOnly, lang.filter_us()),
                 ] {
-                    let bw = self.sc(48);
                     let fr = RECT {
                         left: fx,
                         top: y,
-                        right: fx + bw,
+                        right: fx + tab_w,
                         bottom: y + bar_h,
                     };
                     let active = self.config.market_filter == f;
@@ -760,45 +759,47 @@ impl AppState {
                         rect: fr,
                         target: HitTarget::Filter(f),
                     });
-                    fx += bw + self.sc(4);
+                    fx += tab_w + self.sc(4);
                 }
 
-                let sort_lbl = match self.config.sort_display {
-                    SortDisplay::Custom => lang.sort_custom(),
-                    SortDisplay::ChangeDesc => lang.sort_desc(),
-                    SortDisplay::ChangeAsc => lang.sort_asc(),
-                };
-                let sw = self.sc(110);
-                let sr = RECT {
-                    left: width - pad - sw,
-                    top: y,
-                    right: width - pad,
-                    bottom: y + bar_h,
-                };
-                let sort_hov = hover_target == Some(HitTarget::CycleSort);
-                draw_round_box(
-                    mem_dc,
-                    &sr,
-                    if sort_hov { pill_hover } else { pill_idle },
-                    card_border,
-                    self.sc(5),
-                );
-                draw_text(
-                    mem_dc,
-                    &format!("{sort_lbl} ▾"),
-                    &sr,
-                    self.fonts.small,
-                    text_primary,
-                    DT_SINGLELINE | DT_VCENTER | DT_CENTER,
-                );
-                self.hits.push(HitRect {
-                    rect: sr,
-                    target: HitTarget::CycleSort,
-                });
+                if mode == ViewMode::Standard {
+                    let sort_lbl = match self.config.sort_display {
+                        SortDisplay::Custom => lang.sort_custom(),
+                        SortDisplay::ChangeDesc => lang.sort_desc(),
+                        SortDisplay::ChangeAsc => lang.sort_asc(),
+                    };
+                    let sw = self.sc(110);
+                    let sr = RECT {
+                        left: width - pad - sw,
+                        top: y,
+                        right: width - pad,
+                        bottom: y + bar_h,
+                    };
+                    let sort_hov = hover_target == Some(HitTarget::CycleSort);
+                    draw_round_box(
+                        mem_dc,
+                        &sr,
+                        if sort_hov { pill_hover } else { pill_idle },
+                        card_border,
+                        self.sc(5),
+                    );
+                    draw_text(
+                        mem_dc,
+                        &format!("{sort_lbl} ▾"),
+                        &sr,
+                        self.fonts.small,
+                        text_primary,
+                        DT_SINGLELINE | DT_VCENTER | DT_CENTER,
+                    );
+                    self.hits.push(HitRect {
+                        rect: sr,
+                        target: HitTarget::CycleSort,
+                    });
+                }
 
                 y += bar_h + self.sc(6);
 
-                // 總收益摘要列（若有持股）
+                // 總收益摘要列（所有模式皆顯示，若有任一檔持股）
                 let mut tw_cost = 0.0;
                 let mut tw_val = 0.0;
                 let mut us_cost = 0.0;
@@ -821,7 +822,7 @@ impl AppState {
                     }
                 }
                 if tw_cost > 0.0 || us_cost > 0.0 {
-                    let sum_h = self.sc(28);
+                    let sum_h = self.sc(26);
                     let sum_r = RECT {
                         left: pad,
                         top: y,
@@ -848,14 +849,14 @@ impl AppState {
                         }
                     }
                     let txt_r = RECT {
-                        left: sum_r.left + self.sc(10),
+                        left: sum_r.left + self.sc(8),
                         top: sum_r.top,
-                        right: sum_r.right - self.sc(10),
+                        right: sum_r.right - self.sc(8),
                         bottom: sum_r.bottom,
                     };
                     draw_text(
                         mem_dc,
-                        &parts.join("   |   "),
+                        &parts.join("  |  "),
                         &txt_r,
                         self.fonts.small,
                         sum_col,
