@@ -4,7 +4,7 @@
 //! - 雙緩衝（Double Buffering）GDI 繪製，視覺配色、卡片層次與圓角對齊原 egui 設計
 //! - 完整支援懸停回饋、手型游標、細緻捲軸、三種視窗模式、拖曳排序、持股收益與螢幕邊界保護
 
-use crate::config::{AppConfig, Market, MarketFilter, SortDisplay, ViewMode, WindowRect};
+use crate::config::{AppConfig, Market, MarketFilter, ViewMode, WindowRect};
 use crate::dialogs::{open_add_stock_dialog, open_edit_position_dialog, open_settings_dialog};
 use crate::i18n::{Lang, resolve_lang};
 use crate::market_hours::current_market_status;
@@ -83,7 +83,6 @@ enum HitTarget {
     Settings,
     CloseApp,
     Filter(MarketFilter),
-    CycleSort,
     DragHandle(usize),
     EditPos(usize),
     StockCard(usize),
@@ -357,8 +356,7 @@ impl AppState {
     }
 
     fn visible_indices(&self) -> Vec<usize> {
-        let mut indices: Vec<usize> = self
-            .config
+        self.config
             .watchlist
             .iter()
             .enumerate()
@@ -368,42 +366,7 @@ impl AppState {
                 MarketFilter::UsOnly => item.market == Market::Us,
             })
             .map(|(i, _)| i)
-            .collect();
-
-        match self.config.sort_display {
-            SortDisplay::Custom => {}
-            SortDisplay::ChangeDesc => {
-                indices.sort_by(|&a, &b| {
-                    let qa = self
-                        .quotes
-                        .get(&self.config.watchlist[a].key())
-                        .map(|q| q.change_percent)
-                        .unwrap_or(f64::NEG_INFINITY);
-                    let qb = self
-                        .quotes
-                        .get(&self.config.watchlist[b].key())
-                        .map(|q| q.change_percent)
-                        .unwrap_or(f64::NEG_INFINITY);
-                    qb.partial_cmp(&qa).unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-            SortDisplay::ChangeAsc => {
-                indices.sort_by(|&a, &b| {
-                    let qa = self
-                        .quotes
-                        .get(&self.config.watchlist[a].key())
-                        .map(|q| q.change_percent)
-                        .unwrap_or(f64::INFINITY);
-                    let qb = self
-                        .quotes
-                        .get(&self.config.watchlist[b].key())
-                        .map(|q| q.change_percent)
-                        .unwrap_or(f64::INFINITY);
-                    qa.partial_cmp(&qb).unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-        }
-        indices
+            .collect()
     }
 
     fn price_color(&self, market: Market, change: f64) -> u32 {
@@ -754,13 +717,14 @@ impl AppState {
                 DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
             );
 
+            let mkt_status = current_market_status(self.config.include_us_extended);
+
             // 空間足夠時顯示 TW / US 盤中指示燈
             if mode == ViewMode::Standard && title_right > pad + self.sc(142) {
-                let st = current_market_status(self.config.include_us_extended);
                 let dot_y = y + top_h / 2;
                 let mut dx = pad + self.sc(78);
                 let dot_r = self.sc(3).max(3);
-                let tw_c = if st.tw_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
+                let tw_c = if mkt_status.tw_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
                 draw_dot(mem_dc, dx, dot_y, dot_r, tw_c);
                 let tr = RECT {
                     left: dx + self.sc(6),
@@ -771,7 +735,7 @@ impl AppState {
                 draw_text(mem_dc, "TW", &tr, self.fonts.small, text_muted, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
 
                 dx += self.sc(32);
-                let us_c = if st.us_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
+                let us_c = if mkt_status.us_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
                 draw_dot(mem_dc, dx, dot_y, dot_r, us_c);
                 let ur = RECT {
                     left: dx + self.sc(6),
@@ -792,12 +756,23 @@ impl AppState {
             {
                 let bar_h = self.sc(22);
                 let mut fx = pad;
-                let tab_w = self.sc(if is_compact { 42 } else { 48 });
+                let base_tab_w = self.sc(if is_compact { 42 } else { 48 });
+                let open_dot_col = if dark { rgb(52, 211, 130) } else { rgb(22, 163, 74) };
                 for (f, lbl) in [
                     (MarketFilter::All, lang.filter_all()),
                     (MarketFilter::TwOnly, lang.filter_tw()),
                     (MarketFilter::UsOnly, lang.filter_us()),
                 ] {
+                    let is_open = match f {
+                        MarketFilter::TwOnly => mkt_status.tw_open,
+                        MarketFilter::UsOnly => mkt_status.us_open,
+                        MarketFilter::All => false,
+                    };
+                    let tab_w = if is_open {
+                        base_tab_w + self.sc(8)
+                    } else {
+                        base_tab_w
+                    };
                     let fr = RECT {
                         left: fx,
                         top: y,
@@ -814,10 +789,22 @@ impl AppState {
                         bg_col
                     };
                     draw_round_box(mem_dc, &fr, fill, if active { card_border } else { fill }, self.sc(5));
+                    let txt_r = if is_open {
+                        let dot_r = self.sc(3).max(2);
+                        draw_dot(mem_dc, fr.left + self.sc(9), fr.top + bar_h / 2, dot_r, open_dot_col);
+                        RECT {
+                            left: fr.left + self.sc(10),
+                            top: fr.top,
+                            right: fr.right,
+                            bottom: fr.bottom,
+                        }
+                    } else {
+                        fr
+                    };
                     draw_text(
                         mem_dc,
                         lbl,
-                        &fr,
+                        &txt_r,
                         self.fonts.small,
                         if active || hov { text_primary } else { text_muted },
                         DT_SINGLELINE | DT_VCENTER | DT_CENTER,
@@ -827,41 +814,6 @@ impl AppState {
                         target: HitTarget::Filter(f),
                     });
                     fx += tab_w + self.sc(4);
-                }
-
-                if mode == ViewMode::Standard {
-                    let sort_lbl = match self.config.sort_display {
-                        SortDisplay::Custom => lang.sort_custom(),
-                        SortDisplay::ChangeDesc => lang.sort_desc(),
-                        SortDisplay::ChangeAsc => lang.sort_asc(),
-                    };
-                    let sw = self.sc(110);
-                    let sr = RECT {
-                        left: width - pad - sw,
-                        top: y,
-                        right: width - pad,
-                        bottom: y + bar_h,
-                    };
-                    let sort_hov = hover_target == Some(HitTarget::CycleSort);
-                    draw_round_box(
-                        mem_dc,
-                        &sr,
-                        if sort_hov { pill_hover } else { pill_idle },
-                        card_border,
-                        self.sc(5),
-                    );
-                    draw_text(
-                        mem_dc,
-                        &format!("{sort_lbl} ▾"),
-                        &sr,
-                        self.fonts.small,
-                        text_primary,
-                        DT_SINGLELINE | DT_VCENTER | DT_CENTER,
-                    );
-                    self.hits.push(HitRect {
-                        rect: sr,
-                        target: HitTarget::CycleSort,
-                    });
                 }
 
                 y += bar_h + self.sc(6);
@@ -898,22 +850,22 @@ impl AppState {
                     };
                     draw_round_box(mem_dc, &sum_r, card_col, card_border, self.sc(6));
                     let mut parts = vec![lang.label_total_pnl().to_string()];
-                    let mut sum_col = text_primary;
+                    let sum_col = if dark {
+                        rgb(250, 204, 72)
+                    } else {
+                        rgb(180, 118, 8)
+                    };
                     if tw_cost > 0.0 {
                         let p = tw_val - tw_cost;
                         let pct = (p / tw_cost) * 100.0;
                         let sign = if p > 0.0 { "+" } else { "" };
                         parts.push(format!("TWD {sign}{} ({sign}{pct:.2}%)", format_number(p, 0)));
-                        sum_col = self.price_color(Market::Tw, p);
                     }
                     if us_cost > 0.0 {
                         let p = us_val - us_cost;
                         let pct = (p / us_cost) * 100.0;
                         let sign = if p > 0.0 { "+" } else { "" };
                         parts.push(format!("USD {sign}{} ({sign}{pct:.2}%)", format_number(p, 2)));
-                        if tw_cost <= 0.0 {
-                            sum_col = self.price_color(Market::Us, p);
-                        }
                     }
                     let txt_r = RECT {
                         left: sum_r.left + self.sc(8),
@@ -945,9 +897,7 @@ impl AppState {
             let list_bottom = (height - bottom_bar_h - self.sc(4)).max(list_top + self.sc(40));
             let indices = self.visible_indices();
 
-            let allow_drag = self.config.sort_display == SortDisplay::Custom
-                && self.config.market_filter == MarketFilter::All
-                && !is_compact;
+            let allow_drag = self.config.market_filter == MarketFilter::All && !is_compact;
 
             let gap = self.sc(if is_compact { 6 } else { 7 });
             let mut total_h = 0;
@@ -974,6 +924,28 @@ impl AppState {
             IntersectClipRect(mem_dc, 0, list_top, width, list_bottom);
 
             let mut hovered_card_rect: Option<RECT> = None;
+
+            fn push_clipped_hit(
+                hits: &mut Vec<HitRect>,
+                r: RECT,
+                clip_top: i32,
+                clip_bottom: i32,
+                target: HitTarget,
+            ) {
+                let top = r.top.max(clip_top);
+                let bottom = r.bottom.min(clip_bottom);
+                if bottom > top && r.right > r.left {
+                    hits.push(HitRect {
+                        rect: RECT {
+                            left: r.left,
+                            top,
+                            right: r.right,
+                            bottom,
+                        },
+                        target,
+                    });
+                }
+            }
 
             if indices.is_empty() {
                 let empty_r = RECT {
@@ -1025,10 +997,7 @@ impl AppState {
                         };
                         draw_round_box(mem_dc, &card_r, fill_c, border_c, self.sc(8));
 
-                        self.hits.push(HitRect {
-                            rect: card_r,
-                            target: HitTarget::StockCard(idx),
-                        });
+                        push_clipped_hit(&mut self.hits, card_r, list_top, list_bottom, HitTarget::StockCard(idx));
 
                         let mut lx = card_r.left + self.sc(10);
                         if allow_drag {
@@ -1046,10 +1015,7 @@ impl AppState {
                                 text_muted,
                                 DT_SINGLELINE | DT_VCENTER | DT_CENTER,
                             );
-                            self.hits.push(HitRect {
-                                rect: drag_r,
-                                target: HitTarget::DragHandle(idx),
-                            });
+                            push_clipped_hit(&mut self.hits, drag_r, list_top, list_bottom, HitTarget::DragHandle(idx));
                             lx += self.sc(22);
                         }
 
@@ -1124,10 +1090,7 @@ impl AppState {
                                 },
                                 DT_SINGLELINE | DT_VCENTER | DT_CENTER,
                             );
-                            self.hits.push(HitRect {
-                                rect: pos_btn_r,
-                                target: HitTarget::EditPos(idx),
-                            });
+                            push_clipped_hit(&mut self.hits, pos_btn_r, list_top, list_bottom, HitTarget::EditPos(idx));
                         }
 
                         // 第二列左：股票名稱
@@ -1668,15 +1631,6 @@ unsafe extern "system" fn main_wndproc(
                 Some(HitTarget::Filter(f)) => {
                     st.config.market_filter = f;
                     st.scroll_y = 0;
-                    st.save_and_sync();
-                    st.repaint();
-                }
-                Some(HitTarget::CycleSort) => {
-                    st.config.sort_display = match st.config.sort_display {
-                        SortDisplay::Custom => SortDisplay::ChangeDesc,
-                        SortDisplay::ChangeDesc => SortDisplay::ChangeAsc,
-                        SortDisplay::ChangeAsc => SortDisplay::Custom,
-                    };
                     st.save_and_sync();
                     st.repaint();
                 }

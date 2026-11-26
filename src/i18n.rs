@@ -135,37 +135,6 @@ impl Lang {
         }
     }
 
-    pub fn sort_custom(self) -> &'static str {
-        match self {
-            Lang::ZhTw => "自訂順序",
-            Lang::ZhCn => "自定义顺序",
-            Lang::En => "Custom Order",
-            Lang::Ja => "カスタム順",
-            Lang::Ko => "사용자 순서",
-            Lang::Es => "Orden",
-        }
-    }
-    pub fn sort_desc(self) -> &'static str {
-        match self {
-            Lang::ZhTw => "漲幅高→低",
-            Lang::ZhCn => "涨幅高→低",
-            Lang::En => "Change High→Low",
-            Lang::Ja => "騰落率 高→低",
-            Lang::Ko => "등락률 높→낮",
-            Lang::Es => "Cambio ↓",
-        }
-    }
-    pub fn sort_asc(self) -> &'static str {
-        match self {
-            Lang::ZhTw => "漲幅低→高",
-            Lang::ZhCn => "涨幅低→高",
-            Lang::En => "Change Low→High",
-            Lang::Ja => "騰落率 低→高",
-            Lang::Ko => "등락률 낮→높",
-            Lang::Es => "Cambio ↑",
-        }
-    }
-
     pub fn empty_watchlist(self) -> &'static str {
         match self {
             Lang::ZhTw => "尚未設定自選股，請點擊右上角 ＋ 新增",

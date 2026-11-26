@@ -277,19 +277,26 @@ try {
     }
     Write-Host "[PASS] 7. Settings 4-tab switch, Windows auto-start toggle (ON/OFF), & GitHub update check succeeded: '$updText'"
 
-    # 8. 篩選分頁（台股 / 美股 / 全部）、排序切換與立即刷新
+    # 8. 篩選分頁（台股 / 美股 / 全部）、捲動後分頁點擊不被後方卡片攔截、與立即刷新
+    # 先向下捲動使第一張卡片部分超出 list_top，再雙擊「台股」分頁，驗證不會誤觸後方卡片的編輯持股視窗
+    $wheelWp = [IntPtr]((-60 -band 0xFFFF) -shl 16)
+    [void][E2EFull.U32]::PostMessageW($main, 0x020A, $wheelWp, (MakeLParam ([int]($c.W / 2)) (& $sc 140))) # WM_MOUSEWHEEL
+    Start-Sleep -Milliseconds 120
     $filterY = (& $sc 8) + (& $sc 24) + (& $sc 12) + (& $sc 12)
+    [void][E2EFull.U32]::PostMessageW($main, 0x0203, [IntPtr]1, (MakeLParam (& $sc 75) $filterY)) # DblClk TW tab
+    Start-Sleep -Milliseconds 200
+    if ([E2EFull.U32]::FindWindowW("StockTW_EditPosDlg_v2", [NullString]::Value) -ne [IntPtr]::Zero) {
+        throw "FAIL: Scrolled stock card intercepted click on filter tab!"
+    }
     ClickAt $main (& $sc 75) $filterY   # TW tab
     Start-Sleep -Milliseconds 120
     ClickAt $main (& $sc 125) $filterY  # US tab
     Start-Sleep -Milliseconds 120
     ClickAt $main (& $sc 30) $filterY   # All tab
     Start-Sleep -Milliseconds 120
-    ClickAt $main ($c.W - (& $sc 50)) $filterY # Sort cycle
-    Start-Sleep -Milliseconds 120
     ClickAt $main $c.RefX $c.TopY       # Force refresh
     Start-Sleep -Milliseconds 300
-    Write-Host "[PASS] 8. Filter tabs, sort cycle, and manual refresh all responded cleanly"
+    Write-Host "[PASS] 8. Filter tabs (even after scroll) and manual refresh all responded cleanly"
 
     # 9. 驗證 DPAPI 加密檔案（檔頭為 SSTK\x01 且不含明文 2454）與低記憶體
     $pInfo = Get-Process -Id $proc.Id
