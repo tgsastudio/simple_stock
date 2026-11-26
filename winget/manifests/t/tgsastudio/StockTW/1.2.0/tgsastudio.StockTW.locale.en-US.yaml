@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: tgsastudio.StockTW
+PackageVersion: 1.2.0
+PackageLocale: en-US
+Publisher: tgsastudio
+PublisherUrl: https://github.com/tgsastudio/simple_stock
+PublisherSupportUrl: https://github.com/tgsastudio/simple_stock/issues
+PackageName: Stock TW
+PackageUrl: https://github.com/tgsastudio/simple_stock
+License: MIT
+LicenseUrl: https://github.com/tgsastudio/simple_stock/blob/main/LICENSE
+ShortDescription: Lightweight native Windows real-time stock dashboard for Taiwan and US markets.
+Description: >-
+  Stock TW is a lightweight, no-login Windows real-time stock dashboard for Taiwan (TWSE/TPEx)
+  and US markets built with pure Rust and native Win32 GDI (~6-7 MB RAM, ~0% idle CPU).
+  Features Standard and Floating Widget modes, portfolio P&L tracking, DPAPI-encrypted local
+  storage, market-hours-aware polling, and 6 UI languages.
+Tags:
+  - stock
+  - finance
+  - dashboard
+  - widget
+  - taiwan
+  - twse
+  - portfolio
+ReleaseNotesUrl: https://github.com/tgsastudio/simple_stock/releases/tag/v1.2.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -46,10 +46,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e_win32.ps1
 ISCC.exe installer\simple_stock.iss
 ```
 
-## Code Signing Policy & Privacy Notice
+## Windows SmartScreen 提示說明與檔案驗證
 
-Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+本專案為免費開源個人專案，目前尚未購買商業程式碼簽章憑證，因此初次執行安裝檔時，Windows Defender SmartScreen 可能會顯示「Windows 已保護您的電腦」提示：
 
-- **Committers & Approvers**: Repository maintainers of `tgsastudio/simple_stock`.
+1. 點擊提示視窗中的 **「其他資訊（More info）」** → **「仍要執行（Run anyway）」** 即可正常安裝。
+2. 每次 GitHub Release 皆由 GitHub Actions 公開原始碼自動編譯打包，並隨附 `SHA256SUMS.txt`，您可在 PowerShell 中驗證下載檔案完整性：
+   ```powershell
+   Get-FileHash .\StockTW-Setup-x64-v1.2.0.exe -Algorithm SHA256
+   ```
+
+## Privacy Notice & License
+
 - **Privacy**: This program will **not** transfer any user information, watchlist, holdings, or personal data to other networked systems. All user preferences and holdings are stored exclusively on the local device and encrypted using Windows DPAPI. The application only performs read-only HTTPS requests to public market quote endpoints (TWSE/TPEx, Yahoo Finance) and GitHub Releases (when manually checking for updates).
 - **License**: Released under the [MIT License](LICENSE).

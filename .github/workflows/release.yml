@@ -65,6 +65,15 @@ jobs:
           name: stock-tw-unsigned
           path: release_signed
 
+      - name: Generate SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem -Path release_signed -File | ForEach-Object {
+            $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          }
+          $lines | Set-Content -Path release_signed\SHA256SUMS.txt -Encoding ascii
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

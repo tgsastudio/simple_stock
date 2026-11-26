@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.6.0.schema.json
+PackageIdentifier: tgsastudio.StockTW
+PackageVersion: 1.2.0
+PackageLocale: zh-TW
+Publisher: tgsastudio
+PublisherUrl: https://github.com/tgsastudio/simple_stock
+PublisherSupportUrl: https://github.com/tgsastudio/simple_stock/issues
+PackageName: Stock TW
+PackageUrl: https://github.com/tgsastudio/simple_stock
+License: MIT
+LicenseUrl: https://github.com/tgsastudio/simple_stock/blob/main/LICENSE
+ShortDescription: 輕量化 Windows 原生台股與美股即時看盤 Dashboard 軟體
+Description: >-
+  Stock TW 以純原生 Rust 與 Windows Win32 GDI 開發，免登入、專用記憶體僅約 6-7 MB、待機 CPU 接近 0%。
+  支援台股（上市/上櫃/ETF）與美股即時報價、標準與浮動雙模式、持股收益計算、Windows DPAPI 本地加密與六國語言介面。
+Tags:
+  - stock
+  - 台股
+  - 美股
+  - 看盤
+  - 股票
+ReleaseNotesUrl: https://github.com/tgsastudio/simple_stock/releases/tag/v1.2.0
+ManifestType: locale
+ManifestVersion: 1.6.0
