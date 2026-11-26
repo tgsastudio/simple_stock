@@ -1,3 +1,4 @@
+use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -17,16 +18,36 @@ impl Market {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StockItem {
     pub symbol: String,
     pub name: String,
     pub market: Market,
+    #[serde(default)]
+    pub shares: f64,
+    #[serde(default)]
+    pub avg_cost: f64,
 }
 
 impl StockItem {
     pub fn key(&self) -> String {
         format!("{:?}:{}", self.market, self.symbol.to_uppercase())
+    }
+
+    pub fn has_position(&self) -> bool {
+        self.shares > 0.0 && self.avg_cost > 0.0
+    }
+
+    /// Returns (profit_amount, profit_percent) given current price.
+    pub fn pnl(&self, current_price: f64) -> Option<(f64, f64)> {
+        if !self.has_position() || current_price <= 0.0 {
+            return None;
+        }
+        let cost_basis = self.shares * self.avg_cost;
+        let market_value = self.shares * current_price;
+        let profit = market_value - cost_basis;
+        let pct = (profit / cost_basis) * 100.0;
+        Some((profit, pct))
     }
 }
 
@@ -134,31 +155,43 @@ impl Default for AppConfig {
                     symbol: "2330".to_string(),
                     name: "台積電".to_string(),
                     market: Market::Tw,
+                    shares: 0.0,
+                    avg_cost: 0.0,
                 },
                 StockItem {
                     symbol: "0050".to_string(),
                     name: "元大台灣50".to_string(),
                     market: Market::Tw,
+                    shares: 0.0,
+                    avg_cost: 0.0,
                 },
                 StockItem {
                     symbol: "2317".to_string(),
                     name: "鴻海".to_string(),
                     market: Market::Tw,
+                    shares: 0.0,
+                    avg_cost: 0.0,
                 },
                 StockItem {
                     symbol: "NVDA".to_string(),
                     name: "NVIDIA".to_string(),
                     market: Market::Us,
+                    shares: 0.0,
+                    avg_cost: 0.0,
                 },
                 StockItem {
                     symbol: "AAPL".to_string(),
                     name: "Apple".to_string(),
                     market: Market::Us,
+                    shares: 0.0,
+                    avg_cost: 0.0,
                 },
                 StockItem {
                     symbol: "TSLA".to_string(),
                     name: "Tesla".to_string(),
                     market: Market::Us,
+                    shares: 0.0,
+                    avg_cost: 0.0,
                 },
             ],
             refresh_mode: RefreshMode::Balanced15s,
@@ -178,38 +211,51 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn config_path() -> PathBuf {
-        // Portable mode: if config.json exists next to the executable, use it.
+        // Portable mode: if config.dat or legacy config.json exists next to the executable, use it.
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
-                let portable = dir.join("config.json");
-                if portable.exists() {
-                    return portable;
+                let portable_dat = dir.join("config.dat");
+                let portable_json = dir.join("config.json");
+                if portable_dat.exists() || portable_json.exists() {
+                    return portable_dat;
                 }
             }
         }
         if let Some(proj) = directories::ProjectDirs::from("com", "tgsastudio", "simple_stock") {
-            return proj.config_dir().join("config.json");
+            return proj.config_dir().join("config.dat");
         }
-        PathBuf::from("config.json")
+        PathBuf::from("config.dat")
     }
 
     pub fn load() -> Self {
-        let path = Self::config_path();
-        if let Ok(text) = fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str::<AppConfig>(&text) {
-                return cfg;
+        let dat_path = Self::config_path();
+        if dat_path.exists() {
+            if let Ok(bytes) = storage::read_encrypted(&dat_path) {
+                if let Ok(cfg) = serde_json::from_slice::<AppConfig>(&bytes) {
+                    return cfg;
+                }
             }
         }
+
+        // Seamless migration from legacy plaintext config.json -> encrypted config.dat
+        let legacy_json = dat_path.with_extension("json");
+        if legacy_json.exists() {
+            if let Ok(text) = fs::read_to_string(&legacy_json) {
+                if let Ok(cfg) = serde_json::from_str::<AppConfig>(&text) {
+                    cfg.save();
+                    let _ = fs::remove_file(&legacy_json);
+                    return cfg;
+                }
+            }
+        }
+
         Self::default()
     }
 
     pub fn save(&self) {
         let path = Self::config_path();
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(path, json);
+        if let Ok(bytes) = serde_json::to_vec(self) {
+            let _ = storage::write_encrypted(&path, &bytes);
         }
     }
 }

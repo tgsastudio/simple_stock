@@ -280,4 +280,49 @@ impl Lang {
             (_, LanguageSetting::En) => "English",
         }
     }
+
+    // Position & P&L labels
+    pub fn ctx_edit_position(self) -> &'static str {
+        if self.is_zh() { "✎ 編輯持股 (數量/成本)" } else { "✎ Edit Position (Qty/Cost)" }
+    }
+    pub fn tip_edit_position(self) -> &'static str {
+        if self.is_zh() { "設定持有數量與成本" } else { "Set shares & avg cost" }
+    }
+    pub fn edit_pos_title(self) -> &'static str {
+        if self.is_zh() { "編輯持股" } else { "Edit Position" }
+    }
+    pub fn label_shares(self) -> &'static str {
+        if self.is_zh() { "持有數量：" } else { "Shares:" }
+    }
+    pub fn label_avg_cost(self) -> &'static str {
+        if self.is_zh() { "持有成本：" } else { "Avg Cost:" }
+    }
+    pub fn label_cost_basis(self) -> &'static str {
+        if self.is_zh() { "總成本：" } else { "Cost Basis: " }
+    }
+    pub fn label_market_value(self) -> &'static str {
+        if self.is_zh() { "總市值：" } else { "Market Value: " }
+    }
+    pub fn label_pnl(self) -> &'static str {
+        if self.is_zh() { "收益" } else { "P&L" }
+    }
+    pub fn label_holding_short(self) -> &'static str {
+        if self.is_zh() { "持股" } else { "Qty" }
+    }
+    pub fn label_total_pnl(self) -> &'static str {
+        if self.is_zh() { "總收益" } else { "Total P&L" }
+    }
+    pub fn btn_save(self) -> &'static str {
+        if self.is_zh() { "儲存" } else { "Save" }
+    }
+    pub fn btn_clear_pos(self) -> &'static str {
+        if self.is_zh() { "清除持股" } else { "Clear" }
+    }
+    pub fn dpapi_encrypted_note(self) -> &'static str {
+        if self.is_zh() {
+            "🔒 資料已透過 Windows DPAPI 加密儲存，防止其他程式讀取"
+        } else {
+            "🔒 Data encrypted via Windows DPAPI to prevent unauthorized access"
+        }
+    }
 }

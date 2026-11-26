@@ -7,6 +7,7 @@ mod i18n;
 mod icon;
 mod market_hours;
 mod quote;
+mod storage;
 mod worker;
 
 use crate::app::StockApp;

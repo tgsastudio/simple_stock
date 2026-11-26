@@ -22,6 +22,41 @@ enum SortDisplay {
     ChangeAsc,
 }
 
+fn format_number(val: f64, decimals: usize) -> String {
+    let neg = val < 0.0;
+    let abs = val.abs();
+    let formatted = format!("{abs:.decimals$}");
+    let mut parts = formatted.split('.');
+    let int_part = parts.next().unwrap_or("0");
+    let dec_part = parts.next();
+
+    let mut with_commas = String::with_capacity(int_part.len() + int_part.len() / 3);
+    for (i, ch) in int_part.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            with_commas.push(',');
+        }
+        with_commas.push(ch);
+    }
+    let int_commas: String = with_commas.chars().rev().collect();
+
+    let prefix = if neg { "-" } else { "" };
+    match dec_part {
+        Some(d) => format!("{prefix}{int_commas}.{d}"),
+        None => format!("{prefix}{int_commas}"),
+    }
+}
+
+fn format_shares(shares: f64) -> String {
+    if (shares - shares.round()).abs() < 1e-6 {
+        format_number(shares, 0)
+    } else {
+        format!("{shares:.4}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
 pub struct StockApp {
     config: AppConfig,
     quotes: HashMap<String, QuoteData>,
@@ -39,11 +74,18 @@ pub struct StockApp {
     // Add stock form
     add_symbol_input: String,
     add_name_input: String,
+    add_shares_input: String,
+    add_cost_input: String,
     add_market_override: Option<Market>,
     search_results: Vec<SearchResult>,
     search_loading: bool,
     search_error: Option<String>,
     search_rx: Option<Receiver<Result<Vec<SearchResult>, String>>>,
+
+    // Edit position dialog
+    edit_pos_idx: Option<usize>,
+    edit_shares_input: String,
+    edit_cost_input: String,
 
     // Drag-and-drop state
     dragging_idx: Option<usize>,
@@ -68,11 +110,16 @@ impl StockApp {
             sort_display: SortDisplay::Custom,
             add_symbol_input: String::new(),
             add_name_input: String::new(),
+            add_shares_input: String::new(),
+            add_cost_input: String::new(),
             add_market_override: None,
             search_results: Vec::new(),
             search_loading: false,
             search_error: None,
             search_rx: None,
+            edit_pos_idx: None,
+            edit_shares_input: String::new(),
+            edit_cost_input: String::new(),
             dragging_idx: None,
         }
     }
@@ -117,6 +164,22 @@ impl StockApp {
         }
         self.apply_viewport_for_mode(ctx, true);
         self.save_and_sync();
+    }
+
+    fn open_edit_position(&mut self, idx: usize) {
+        if let Some(item) = self.config.watchlist.get(idx) {
+            self.edit_pos_idx = Some(idx);
+            self.edit_shares_input = if item.shares > 0.0 {
+                format_shares(item.shares).replace(',', "")
+            } else {
+                String::new()
+            };
+            self.edit_cost_input = if item.avg_cost > 0.0 {
+                format!("{:.2}", item.avg_cost)
+            } else {
+                String::new()
+            };
+        }
     }
 
     fn drain_worker_events(&mut self) {
@@ -204,7 +267,14 @@ impl StockApp {
         }
     }
 
-    fn add_stock_item(&mut self, symbol: String, name: String, market: Market) {
+    fn add_stock_item(
+        &mut self,
+        symbol: String,
+        name: String,
+        market: Market,
+        shares: f64,
+        avg_cost: f64,
+    ) {
         let clean_sym = symbol.trim().to_uppercase();
         if clean_sym.is_empty() {
             return;
@@ -218,6 +288,8 @@ impl StockApp {
             symbol: clean_sym,
             name: clean_name,
             market,
+            shares: shares.max(0.0),
+            avg_cost: avg_cost.max(0.0),
         };
         let key = item.key();
         if !self.config.watchlist.iter().any(|x| x.key() == key) {
@@ -296,7 +368,11 @@ impl StockApp {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if mode == ViewMode::FloatingWidget {
-                    if ui.small_button("✕").on_hover_text(lang.tip_close()).clicked() {
+                    if ui
+                        .small_button("✕")
+                        .on_hover_text(lang.tip_close())
+                        .clicked()
+                    {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
@@ -408,6 +484,82 @@ impl StockApp {
         });
     }
 
+    fn render_portfolio_summary(&self, ui: &mut egui::Ui) -> bool {
+        if self.config.view_mode != ViewMode::Standard {
+            return false;
+        }
+        let mut tw_cost = 0.0;
+        let mut tw_val = 0.0;
+        let mut us_cost = 0.0;
+        let mut us_val = 0.0;
+
+        for item in &self.config.watchlist {
+            if !item.has_position() {
+                continue;
+            }
+            if let Some(q) = self.quotes.get(&item.key()) {
+                let cost = item.shares * item.avg_cost;
+                let val = item.shares * q.price;
+                match item.market {
+                    Market::Tw => {
+                        tw_cost += cost;
+                        tw_val += val;
+                    }
+                    Market::Us => {
+                        us_cost += cost;
+                        us_val += val;
+                    }
+                }
+            }
+        }
+
+        if tw_cost <= 0.0 && us_cost <= 0.0 {
+            return false;
+        }
+
+        let lang = self.lang();
+        Frame::new()
+            .fill(self.card_color())
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::symmetric(10, 5))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(lang.label_total_pnl()).strong().size(11.5));
+                    if tw_cost > 0.0 {
+                        let profit = tw_val - tw_cost;
+                        let pct = (profit / tw_cost) * 100.0;
+                        let sign = if profit > 0.0 { "+" } else { "" };
+                        let col = self.price_color(Market::Tw, profit);
+                        ui.label(
+                            RichText::new(format!(
+                                "TWD {sign}{} ({sign}{pct:.2}%)",
+                                format_number(profit, 0)
+                            ))
+                            .color(col)
+                            .strong()
+                            .size(11.5),
+                        );
+                    }
+                    if us_cost > 0.0 {
+                        let profit = us_val - us_cost;
+                        let pct = (profit / us_cost) * 100.0;
+                        let sign = if profit > 0.0 { "+" } else { "" };
+                        let col = self.price_color(Market::Us, profit);
+                        ui.label(
+                            RichText::new(format!(
+                                "USD {sign}{} ({sign}{pct:.2}%)",
+                                format_number(profit, 2)
+                            ))
+                            .color(col)
+                            .strong()
+                            .size(11.5),
+                        );
+                    }
+                });
+            });
+        true
+    }
+
     fn render_watchlist(&mut self, ui: &mut egui::Ui) {
         let mode = self.config.view_mode;
         let is_compact = mode != ViewMode::Standard;
@@ -470,6 +622,7 @@ impl StockApp {
         let mut action_move: Option<(usize, usize)> = None;
         let mut action_pin_top: Option<usize> = None;
         let mut action_delete: Option<usize> = None;
+        let mut action_edit_pos: Option<usize> = None;
         let allow_drag = self.sort_display == SortDisplay::Custom
             && self.config.market_filter == MarketFilter::All;
 
@@ -501,98 +654,160 @@ impl StockApp {
                             if is_compact { 5 } else { 7 },
                         ))
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if allow_drag && !is_compact {
-                                    let handle = ui.add(
-                                        egui::Label::new(RichText::new("☰").weak().size(13.0))
-                                            .sense(Sense::drag()),
-                                    );
-                                    if handle.drag_started() {
-                                        self.dragging_idx = Some(idx);
-                                    }
-                                    handle.on_hover_text(lang.tip_drag_reorder());
-                                }
-
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        let badge_color = match item.market {
-                                            Market::Tw => Color32::from_rgb(76, 154, 255),
-                                            Market::Us => Color32::from_rgb(174, 128, 255),
-                                        };
-                                        if !is_compact {
-                                            ui.label(
-                                                RichText::new(item.market.badge())
-                                                    .color(badge_color)
-                                                    .size(10.0)
-                                                    .strong(),
-                                            );
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    if allow_drag && !is_compact {
+                                        let handle = ui.add(
+                                            egui::Label::new(RichText::new("☰").weak().size(13.0))
+                                                .sense(Sense::drag()),
+                                        );
+                                        if handle.drag_started() {
+                                            self.dragging_idx = Some(idx);
                                         }
+                                        handle.on_hover_text(lang.tip_drag_reorder());
+                                    }
+
+                                    ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            let badge_color = match item.market {
+                                                Market::Tw => Color32::from_rgb(76, 154, 255),
+                                                Market::Us => Color32::from_rgb(174, 128, 255),
+                                            };
+                                            if !is_compact {
+                                                ui.label(
+                                                    RichText::new(item.market.badge())
+                                                        .color(badge_color)
+                                                        .size(10.0)
+                                                        .strong(),
+                                                );
+                                            }
+                                            ui.label(
+                                                RichText::new(&item.symbol)
+                                                    .strong()
+                                                    .size(if is_compact { 13.0 } else { 14.0 }),
+                                            );
+                                            if !is_compact {
+                                                if ui
+                                                    .small_button(RichText::new("✎").weak().size(10.5))
+                                                    .on_hover_text(lang.tip_edit_position())
+                                                    .clicked()
+                                                {
+                                                    action_edit_pos = Some(idx);
+                                                }
+                                            }
+                                        });
+                                        let name_display = quote
+                                            .as_ref()
+                                            .map(|q| q.display_name.as_str())
+                                            .filter(|s| !s.is_empty())
+                                            .unwrap_or(&item.name);
+                                        let truncated: String =
+                                            name_display.chars().take(12).collect();
                                         ui.label(
-                                            RichText::new(&item.symbol)
-                                                .strong()
-                                                .size(if is_compact { 13.0 } else { 14.0 }),
+                                            RichText::new(truncated)
+                                                .weak()
+                                                .size(if is_compact { 10.5 } else { 11.5 }),
                                         );
                                     });
-                                    let name_display = quote
-                                        .as_ref()
-                                        .map(|q| q.display_name.as_str())
-                                        .filter(|s| !s.is_empty())
-                                        .unwrap_or(&item.name);
-                                    let truncated: String = name_display.chars().take(12).collect();
-                                    ui.label(
-                                        RichText::new(truncated)
-                                            .weak()
-                                            .size(if is_compact { 10.5 } else { 11.5 }),
-                                    );
+
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if let Some(q) = &quote {
+                                            let color = self.price_color(item.market, q.change);
+                                            ui.vertical(|ui| {
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Min),
+                                                    |ui| {
+                                                        ui.label(
+                                                            RichText::new(format!("{:.2}", q.price))
+                                                                .color(color)
+                                                                .strong()
+                                                                .size(if is_compact {
+                                                                    14.0
+                                                                } else {
+                                                                    15.5
+                                                                }),
+                                                        );
+                                                    },
+                                                );
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Min),
+                                                    |ui| {
+                                                        let sign =
+                                                            if q.change > 0.0 { "+" } else { "" };
+                                                        let detail = if is_compact {
+                                                            format!("{sign}{:.2}%", q.change_percent)
+                                                        } else {
+                                                            format!(
+                                                                "{sign}{:.2} ({sign}{:.2}%)",
+                                                                q.change, q.change_percent
+                                                            )
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(detail)
+                                                                .color(color)
+                                                                .size(if is_compact {
+                                                                    11.0
+                                                                } else {
+                                                                    11.5
+                                                                }),
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                        } else {
+                                            ui.label(RichText::new("--").weak());
+                                        }
+                                    });
                                 });
 
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                // Position & P&L sub-row when holdings are configured
+                                if item.has_position() {
                                     if let Some(q) = &quote {
-                                        let color = self.price_color(item.market, q.change);
-                                        ui.vertical(|ui| {
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Min),
-                                                |ui| {
+                                        if let Some((profit, pct)) = item.pnl(q.price) {
+                                            let pnl_color = self.price_color(item.market, profit);
+                                            let sign = if profit > 0.0 { "+" } else { "" };
+                                            let dec = if item.market == Market::Tw { 0 } else { 2 };
+                                            ui.add_space(2.0);
+                                            ui.horizontal(|ui| {
+                                                if !is_compact {
                                                     ui.label(
-                                                        RichText::new(format!("{:.2}", q.price))
-                                                            .color(color)
-                                                            .strong()
-                                                            .size(if is_compact {
-                                                                14.0
-                                                            } else {
-                                                                15.5
-                                                            }),
+                                                        RichText::new(format!(
+                                                            "{} {} @ {:.2}",
+                                                            lang.label_holding_short(),
+                                                            format_shares(item.shares),
+                                                            item.avg_cost
+                                                        ))
+                                                        .weak()
+                                                        .size(10.5),
                                                     );
-                                                },
-                                            );
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Min),
-                                                |ui| {
-                                                    let sign = if q.change > 0.0 { "+" } else { "" };
-                                                    let detail = if is_compact {
-                                                        format!("{sign}{:.2}%", q.change_percent)
-                                                    } else {
-                                                        format!(
-                                                            "{sign}{:.2} ({sign}{:.2}%)",
-                                                            q.change, q.change_percent
-                                                        )
-                                                    };
-                                                    ui.label(
-                                                        RichText::new(detail)
-                                                            .color(color)
-                                                            .size(if is_compact {
-                                                                11.0
-                                                            } else {
-                                                                11.5
-                                                            }),
-                                                    );
-                                                },
-                                            );
-                                        });
-                                    } else {
-                                        ui.label(RichText::new("--").weak());
+                                                }
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        let pnl_str = if is_compact {
+                                                            format!(
+                                                                "{} {sign}{} ({sign}{pct:.1}%)",
+                                                                lang.label_pnl(),
+                                                                format_number(profit, dec)
+                                                            )
+                                                        } else {
+                                                            format!(
+                                                                "{} {sign}{} ({sign}{pct:.2}%)",
+                                                                lang.label_pnl(),
+                                                                format_number(profit, dec)
+                                                            )
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(pnl_str)
+                                                                .color(pnl_color)
+                                                                .size(10.5),
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                        }
                                     }
-                                });
+                                }
                             });
                         });
 
@@ -621,6 +836,41 @@ impl StockApp {
                             if let Some(v) = q.volume {
                                 ui.label(format!("{}{v}", lang.volume()));
                             }
+                            if item.has_position() {
+                                ui.separator();
+                                let dec = if item.market == Market::Tw { 0 } else { 2 };
+                                let cost_basis = item.shares * item.avg_cost;
+                                let mkt_val = item.shares * q.price;
+                                ui.label(format!(
+                                    "{}{} @ {:.2}",
+                                    lang.label_shares(),
+                                    format_shares(item.shares),
+                                    item.avg_cost
+                                ));
+                                ui.label(format!(
+                                    "{}{}",
+                                    lang.label_cost_basis(),
+                                    format_number(cost_basis, dec)
+                                ));
+                                ui.label(format!(
+                                    "{}{}",
+                                    lang.label_market_value(),
+                                    format_number(mkt_val, dec)
+                                ));
+                                if let Some((profit, pct)) = item.pnl(q.price) {
+                                    let sign = if profit > 0.0 { "+" } else { "" };
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{}: {sign}{} ({sign}{pct:.2}%)",
+                                            lang.label_pnl(),
+                                            format_number(profit, dec)
+                                        ))
+                                        .color(self.price_color(item.market, profit))
+                                        .strong(),
+                                    );
+                                }
+                            }
+                            ui.separator();
                             ui.label(
                                 RichText::new(lang.source_updated(q.source, &q.updated_at))
                                     .weak()
@@ -630,6 +880,11 @@ impl StockApp {
                     }
 
                     row_resp.context_menu(|ui| {
+                        if ui.button(lang.ctx_edit_position()).clicked() {
+                            action_edit_pos = Some(idx);
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         if ui.button(lang.ctx_pin_top()).clicked() {
                             action_pin_top = Some(idx);
                             ui.close_menu();
@@ -663,7 +918,9 @@ impl StockApp {
             self.dragging_idx = None;
         }
 
-        if let Some((from, to)) = action_move {
+        if let Some(idx) = action_edit_pos {
+            self.open_edit_position(idx);
+        } else if let Some((from, to)) = action_move {
             if from < self.config.watchlist.len() && to < self.config.watchlist.len() {
                 let item = self.config.watchlist.remove(from);
                 self.config.watchlist.insert(to, item);
@@ -681,8 +938,115 @@ impl StockApp {
         } else if let Some(idx) = action_delete {
             if idx < self.config.watchlist.len() {
                 self.config.watchlist.remove(idx);
+                if self.edit_pos_idx == Some(idx) {
+                    self.edit_pos_idx = None;
+                }
                 self.save_and_sync();
             }
+        }
+    }
+
+    fn render_edit_position_dialog(&mut self, ctx: &Context) {
+        let Some(idx) = self.edit_pos_idx else {
+            return;
+        };
+        let Some(item) = self.config.watchlist.get(idx).cloned() else {
+            self.edit_pos_idx = None;
+            return;
+        };
+
+        let lang = self.lang();
+        let mut open = true;
+        let mut save_clicked = false;
+        let mut clear_clicked = false;
+
+        egui::Window::new(format!(
+            "{} - {} {}",
+            lang.edit_pos_title(),
+            item.symbol,
+            item.name
+        ))
+        .id(Id::new("edit_position_window"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(270.0)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(lang.label_shares());
+                ui.text_edit_singleline(&mut self.edit_shares_input);
+            });
+            ui.horizontal(|ui| {
+                ui.label(lang.label_avg_cost());
+                ui.text_edit_singleline(&mut self.edit_cost_input);
+            });
+
+            let parsed_shares = self
+                .edit_shares_input
+                .trim()
+                .replace(',', "")
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let parsed_cost = self
+                .edit_cost_input
+                .trim()
+                .replace(',', "")
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            if parsed_shares > 0.0 && parsed_cost > 0.0 {
+                let dec = if item.market == Market::Tw { 0 } else { 2 };
+                ui.label(
+                    RichText::new(format!(
+                        "{}{}",
+                        lang.label_cost_basis(),
+                        format_number(parsed_shares * parsed_cost, dec)
+                    ))
+                    .weak()
+                    .size(11.5),
+                );
+            }
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button(lang.btn_save()).clicked() {
+                    save_clicked = true;
+                }
+                if ui.button(lang.btn_clear_pos()).clicked() {
+                    clear_clicked = true;
+                }
+            });
+        });
+
+        if save_clicked {
+            let shares = self
+                .edit_shares_input
+                .trim()
+                .replace(',', "")
+                .parse::<f64>()
+                .unwrap_or(0.0)
+                .max(0.0);
+            let avg_cost = self
+                .edit_cost_input
+                .trim()
+                .replace(',', "")
+                .parse::<f64>()
+                .unwrap_or(0.0)
+                .max(0.0);
+            if let Some(target) = self.config.watchlist.get_mut(idx) {
+                target.shares = shares;
+                target.avg_cost = avg_cost;
+            }
+            self.save_and_sync();
+            self.edit_pos_idx = None;
+        } else if clear_clicked {
+            if let Some(target) = self.config.watchlist.get_mut(idx) {
+                target.shares = 0.0;
+                target.avg_cost = 0.0;
+            }
+            self.save_and_sync();
+            self.edit_pos_idx = None;
+        } else if !open {
+            self.edit_pos_idx = None;
         }
     }
 
@@ -733,14 +1097,40 @@ impl StockApp {
                     ui.text_edit_singleline(&mut self.add_name_input);
                 });
 
+                ui.horizontal(|ui| {
+                    ui.label(lang.label_shares());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.add_shares_input).desired_width(80.0),
+                    );
+                    ui.label(lang.label_avg_cost());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.add_cost_input).desired_width(80.0),
+                    );
+                });
+
+                let shares_val = self
+                    .add_shares_input
+                    .trim()
+                    .replace(',', "")
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+                let cost_val = self
+                    .add_cost_input
+                    .trim()
+                    .replace(',', "")
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+
                 if ui.button(lang.btn_add_direct()).clicked()
                     && !self.add_symbol_input.trim().is_empty()
                 {
                     let sym = self.add_symbol_input.clone();
                     let name = self.add_name_input.clone();
-                    self.add_stock_item(sym, name, selected_market);
+                    self.add_stock_item(sym, name, selected_market, shares_val, cost_val);
                     self.add_symbol_input.clear();
                     self.add_name_input.clear();
+                    self.add_shares_input.clear();
+                    self.add_cost_input.clear();
                     self.add_market_override = None;
                 }
 
@@ -768,7 +1158,7 @@ impl StockApp {
                                 r.exchange
                             );
                             if ui.button(btn_text).clicked() {
-                                self.add_stock_item(r.symbol, r.name, r.market);
+                                self.add_stock_item(r.symbol, r.name, r.market, shares_val, cost_val);
                             }
                         }
                     });
@@ -889,7 +1279,10 @@ impl StockApp {
                     changed = true;
                 }
 
-                if ui.checkbox(&mut self.config.dark_mode, lang.chk_dark()).changed() {
+                if ui
+                    .checkbox(&mut self.config.dark_mode, lang.chk_dark())
+                    .changed()
+                {
                     changed = true;
                 }
 
@@ -902,11 +1295,16 @@ impl StockApp {
                 }
 
                 ui.separator();
+                ui.label(
+                    RichText::new(lang.dpapi_encrypted_note())
+                        .color(Color32::from_rgb(100, 195, 145))
+                        .size(10.5),
+                );
                 let path = AppConfig::config_path();
                 ui.label(
                     RichText::new(format!("{}{}", lang.config_file_label(), path.display()))
                         .weak()
-                        .size(10.5),
+                        .size(10.0),
                 );
             });
 
@@ -999,6 +1397,9 @@ impl eframe::App for StockApp {
                 self.render_filter_bar(ui);
                 if self.config.view_mode == ViewMode::Standard {
                     ui.add_space(4.0);
+                    if self.render_portfolio_summary(ui) {
+                        ui.add_space(4.0);
+                    }
                 }
                 let bottom_reserve = if self.config.view_mode == ViewMode::FloatingWidget {
                     0.0
@@ -1016,6 +1417,7 @@ impl eframe::App for StockApp {
             });
 
         self.render_add_dialog(ctx);
+        self.render_edit_position_dialog(ctx);
         self.render_settings_dialog(ctx);
     }
 

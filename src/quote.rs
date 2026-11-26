@@ -367,21 +367,29 @@ mod tests {
             symbol: "2330".into(),
             name: "台積電".into(),
             market: Market::Tw,
+            shares: 1000.0,
+            avg_cost: 1000.0,
         };
         let us_item = StockItem {
             symbol: "NVDA".into(),
             name: "NVIDIA".into(),
             market: Market::Us,
+            shares: 10.0,
+            avg_cost: 120.0,
         };
 
         let tw_map = fetch_tw_batch(&agent, &[&tw_item]).expect("TW fetch failed");
         let tw_q = tw_map.get(&tw_item.key()).expect("2330 quote missing");
         println!("TW 2330: {} @ {:.2} ({:+.2}%) via {}", tw_q.display_name, tw_q.price, tw_q.change_percent, tw_q.source);
         assert!(tw_q.price > 0.0);
+        let (tw_pnl, tw_pct) = tw_item.pnl(tw_q.price).expect("TW pnl missing");
+        println!("TW 2330 P&L: {:+.0} ({:+.2}%)", tw_pnl, tw_pct);
 
         let (us_map, us_err) = fetch_us_quotes(&agent, &[&us_item]);
         let us_q = us_map.get(&us_item.key()).unwrap_or_else(|| panic!("NVDA quote missing: {:?}", us_err));
         println!("US NVDA: {} @ {:.2} ({:+.2}%) via {}", us_q.display_name, us_q.price, us_q.change_percent, us_q.source);
         assert!(us_q.price > 0.0);
+        let (us_pnl, us_pct) = us_item.pnl(us_q.price).expect("US pnl missing");
+        println!("US NVDA P&L: {:+.2} ({:+.2}%)", us_pnl, us_pct);
     }
 }
