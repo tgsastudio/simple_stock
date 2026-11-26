@@ -1306,6 +1306,11 @@ impl StockApp {
                         .weak()
                         .size(10.0),
                 );
+                ui.label(
+                    RichText::new(format!("simple_stock v{}", env!("CARGO_PKG_VERSION")))
+                        .weak()
+                        .size(10.0),
+                );
             });
 
         self.show_settings_dialog = open;
