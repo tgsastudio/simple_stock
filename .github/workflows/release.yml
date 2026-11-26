@@ -31,7 +31,6 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           & $iscc /Q installer\simple_stock.iss
           New-Item -ItemType Directory -Force -Path release_unsigned | Out-Null
-          Copy-Item target\release\simple_stock.exe release_unsigned\StockTW-Portable-x64.exe
           Copy-Item dist\StockTW-Setup-x64-*.exe release_unsigned\
 
       - name: Upload unsigned build artifacts
