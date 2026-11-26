@@ -7,6 +7,14 @@ use serde_json::Value;
 const GITHUB_LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/tgsastudio/simple_stock/releases/latest";
 
+/// 自動檢查更新間隔：30 天（秒）
+pub const AUTO_UPDATE_INTERVAL_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// 判斷距離上次檢查更新是否已超過 1 個月（30 天）
+pub fn should_auto_check_update(last_check_ts: i64, now_ts: i64) -> bool {
+    last_check_ts <= 0 || now_ts.saturating_sub(last_check_ts) > AUTO_UPDATE_INTERVAL_SECS
+}
+
 #[derive(Debug, Clone)]
 pub struct UpdateCheckResult {
     pub latest_version: String,
@@ -80,4 +88,24 @@ pub fn check_for_updates(current_version: &str) -> Result<UpdateCheckResult, Str
         download_url,
         has_update,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auto_update_interval_rule() {
+        let now = 1_800_000_000i64;
+        assert!(should_auto_check_update(0, now));
+        assert!(!should_auto_check_update(now - 100, now));
+        assert!(!should_auto_check_update(
+            now - AUTO_UPDATE_INTERVAL_SECS,
+            now
+        ));
+        assert!(should_auto_check_update(
+            now - AUTO_UPDATE_INTERVAL_SECS - 1,
+            now
+        ));
+    }
 }

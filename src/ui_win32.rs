@@ -5,18 +5,24 @@
 //! - 完整支援懸停回饋、手型游標、細緻捲軸、三種視窗模式、拖曳排序、持股收益與螢幕邊界保護
 
 use crate::config::{AppConfig, Market, MarketFilter, ViewMode, WindowRect};
-use crate::dialogs::{open_add_stock_dialog, open_edit_position_dialog, open_settings_dialog};
+use crate::dialogs::{
+    open_add_stock_dialog, open_edit_position_dialog, open_settings_dialog,
+    open_update_prompt_dialog,
+};
 use crate::i18n::{Lang, resolve_lang};
 use crate::market_hours::TradingPeriod;
-use chrono::Utc;
 use crate::quote::QuoteData;
+use crate::updater::{UpdateCheckResult, check_for_updates, should_auto_check_update};
 use crate::win32_util::{
     apply_dark_title_bar, font_bold, font_regular, font_semibold, format_number, format_shares,
-    rgb, set_prevent_sleep, to_wide, virtual_screen_bounds,
+    open_url_in_browser, rgb, set_prevent_sleep, to_wide, virtual_screen_bounds,
 };
 use crate::worker::{QuoteWorker, WM_APP_WORKER_EVENT, WorkerCommand, WorkerEvent, WorkerStatus};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::ptr;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateRoundRectRgn,
@@ -42,12 +48,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     RegisterClassW, SIZE_MINIMIZED, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SendMessageW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes,
     SetWindowLongPtrW, SetWindowLongW, SetWindowPos, ShowWindow, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_TOPALIGN, TrackPopupMenu, TranslateMessage, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+    TPM_TOPALIGN, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
     WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_MOVE, WM_NCLBUTTONDOWN, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WNDCLASSW,
     WS_EX_LAYERED, WS_OVERLAPPEDWINDOW, WS_POPUP,
 };
 
+const WM_APP_AUTO_UPDATE: u32 = WM_APP + 2;
 const WM_ACTIVATE: u32 = 0x0006;
 const WM_SETFOCUS: u32 = 0x0007;
 const WM_KILLFOCUS: u32 = 0x0008;
@@ -153,6 +160,7 @@ struct AppState {
     error_text: Option<String>,
     tw_period: Option<TradingPeriod>,
     us_period: Option<TradingPeriod>,
+    update_rx: Option<Receiver<Result<UpdateCheckResult, String>>>,
     fonts: FontSet,
 
     // 捲動、懸停與拖曳排序狀態
@@ -1503,6 +1511,20 @@ unsafe extern "system" fn main_wndproc(
             st.drain_worker_events();
             0
         }
+        WM_APP_AUTO_UPDATE => {
+            if let Some(rx) = st.update_rx.take() {
+                if let Ok(Ok(info)) = rx.try_recv() {
+                    st.config.last_update_check = Utc::now().timestamp();
+                    st.config.save();
+                    if info.has_update
+                        && open_update_prompt_dialog(hwnd, &st.config, &info.latest_version)
+                    {
+                        open_url_in_browser(&info.download_url);
+                    }
+                }
+            }
+            0
+        }
         WM_SETCURSOR => {
             if (lparam & 0xFFFF) == 1 /* HTCLIENT */ {
                 if let Some(t) = st.hover_target {
@@ -1677,11 +1699,14 @@ unsafe extern "system" fn main_wndproc(
                     }
                 }
                 Some(HitTarget::Settings) => {
-                    if let Some(new_cfg) = open_settings_dialog(hwnd, &st.config) {
+                    let prev_check = st.config.last_update_check;
+                    if let Some(new_cfg) = open_settings_dialog(hwnd, &mut st.config) {
                         st.config = new_cfg;
                         st.apply_window_style(false);
                         st.save_and_sync();
                         st.repaint();
+                    } else if st.config.last_update_check != prev_check {
+                        st.config.save();
                     }
                 }
                 Some(HitTarget::CloseApp) => unsafe {
@@ -1827,6 +1852,7 @@ pub fn run_win32_app() {
             error_text: None,
             tw_period: None,
             us_period: None,
+            update_rx: None,
             fonts,
             scroll_y: 0,
             max_scroll: 0,
@@ -1847,6 +1873,24 @@ pub fn run_win32_app() {
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         state.repaint();
+
+        // 啟動時若已超過 1 個月未曾檢查更新，於背景主動檢查
+        let now_ts = Utc::now().timestamp();
+        if should_auto_check_update(state.config.last_update_check, now_ts) {
+            let (tx, rx) = mpsc::channel();
+            state.update_rx = Some(rx);
+            let hwnd_num = hwnd as usize;
+            thread::spawn(move || {
+                let res = check_for_updates(env!("CARGO_PKG_VERSION"));
+                let _ = tx.send(res);
+                windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    hwnd_num as HWND,
+                    WM_APP_AUTO_UPDATE,
+                    0,
+                    0,
+                );
+            });
+        }
 
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {

@@ -172,6 +172,7 @@ pub struct AppConfig {
     pub window_standard: Option<WindowRect>,
     pub window_sidebar: Option<WindowRect>,
     pub window_floating: Option<WindowRect>,
+    pub last_update_check: i64,
 }
 
 impl Default for AppConfig {
@@ -236,6 +237,7 @@ impl Default for AppConfig {
             window_standard: None,
             window_sidebar: None,
             window_floating: None,
+            last_update_check: 0,
         }
     }
 }

@@ -1215,6 +1215,7 @@ unsafe extern "system" fn settings_wndproc(
                     let btn_dl = unsafe { GetDlgItem(hwnd, ID_SET_DOWNLOAD) };
                     match res {
                         Ok(info) if info.has_update => {
+                            st.cfg.last_update_check = chrono::Utc::now().timestamp();
                             set_ctrl_text(
                                 hwnd,
                                 ID_SET_UPD_STATUS,
@@ -1226,6 +1227,7 @@ unsafe extern "system" fn settings_wndproc(
                             }
                         }
                         Ok(info) => {
+                            st.cfg.last_update_check = chrono::Utc::now().timestamp();
                             set_ctrl_text(
                                 hwnd,
                                 ID_SET_UPD_STATUS,
@@ -1334,7 +1336,7 @@ unsafe extern "system" fn settings_wndproc(
 }
 
 /// 開啟「設定」對話框（四個分頁：一般 / 外觀 / 刷新 / 關於）
-pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> {
+pub fn open_settings_dialog(parent: HWND, cfg: &mut AppConfig) -> Option<AppConfig> {
     let lang = resolve_lang(cfg.language);
     let dpi = dpi_of(parent);
     let cls_name = to_wide("StockTW_SettingsDlg_v2");
@@ -1880,6 +1882,170 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
     if state.saved {
         Some(state.cfg)
     } else {
+        if state.cfg.last_update_check != cfg.last_update_check {
+            cfg.last_update_check = state.cfg.last_update_check;
+        }
         None
     }
+}
+
+// ============================================================================
+// 4. 新版本更新提示對話框（前往下載 / 關閉）
+// ============================================================================
+
+const ID_UPD_DL: i32 = 401;
+const ID_UPD_CLOSE: i32 = 402;
+
+struct UpdatePromptState {
+    theme: DlgTheme,
+    download: bool,
+    done: AtomicBool,
+}
+
+unsafe extern "system" fn update_prompt_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut UpdatePromptState };
+    if ptr.is_null() {
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
+    let st = unsafe { &mut *ptr };
+
+    if let Some(res) = st.theme.handle_color_msg(hwnd, msg, wparam) {
+        return res;
+    }
+
+    match msg {
+        WM_COMMAND => {
+            let id = (wparam & 0xFFFF) as i32;
+            if id == ID_UPD_DL {
+                st.download = true;
+                st.done.store(true, Ordering::Release);
+            } else if id == ID_UPD_CLOSE || id == IDCANCEL {
+                st.done.store(true, Ordering::Release);
+            }
+            0
+        }
+        WM_CLOSE => {
+            st.done.store(true, Ordering::Release);
+            0
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// 顯示發現新版本的提示對話框，回傳 `true` 表示使用者點擊「前往下載」
+pub fn open_update_prompt_dialog(parent: HWND, cfg: &AppConfig, latest_version: &str) -> bool {
+    let lang = resolve_lang(cfg.language);
+    let dpi = dpi_of(parent);
+    let cls_name = to_wide("StockTW_UpdatePromptDlg_v1");
+    let hinst = unsafe { GetModuleHandleW(ptr::null()) };
+
+    unsafe {
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(update_prompt_wndproc),
+            hInstance: hinst,
+            hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
+            lpszClassName: cls_name.as_ptr(),
+            ..std::mem::zeroed()
+        };
+        RegisterClassW(&wc);
+    }
+
+    let dlg_w = sc(dpi, 376);
+    let dlg_h = sc(dpi, 158);
+    let (px, py) = center_pos(parent, dlg_w, dlg_h);
+    let title = to_wide(lang.update_prompt_title());
+
+    let dlg = unsafe {
+        CreateWindowExW(
+            WS_EX_DLGMODALFRAME,
+            cls_name.as_ptr(),
+            title.as_ptr(),
+            WS_POPUP | WS_CAPTION | WS_SYSMENU,
+            px,
+            py,
+            dlg_w,
+            dlg_h,
+            parent,
+            ptr::null_mut(),
+            hinst,
+            ptr::null(),
+        )
+    };
+    if dlg.is_null() {
+        return false;
+    }
+    apply_dark_title_bar(dlg, cfg.dark_mode);
+    let dark = cfg.dark_mode;
+    let font = font_regular(sc(dpi, 13));
+
+    let body = lang.update_prompt_body(env!("CARGO_PKG_VERSION"), latest_version);
+    create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "STATIC",
+        &body,
+        SS_NOPREFIX,
+        18,
+        18,
+        334,
+        44,
+        0,
+        font,
+    );
+
+    create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "BUTTON",
+        lang.btn_download_update(),
+        BS_DEFPUSHBUTTON as u32 | WS_TABSTOP,
+        142,
+        78,
+        104,
+        28,
+        ID_UPD_DL,
+        font,
+    );
+    create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "BUTTON",
+        lang.btn_close(),
+        BS_PUSHBUTTON as u32 | WS_TABSTOP,
+        256,
+        78,
+        96,
+        28,
+        ID_UPD_CLOSE,
+        font,
+    );
+
+    let mut state = Box::new(UpdatePromptState {
+        theme: DlgTheme::new(cfg.dark_mode),
+        download: false,
+        done: AtomicBool::new(false),
+    });
+
+    unsafe {
+        SetWindowLongPtrW(
+            dlg,
+            GWLP_USERDATA,
+            (&mut *state as *mut UpdatePromptState) as isize,
+        );
+    }
+
+    run_modal_loop(parent, dlg, &state.done);
+    state.theme.destroy();
+    unsafe {
+        DeleteObject(font as _);
+    }
+    state.download
 }

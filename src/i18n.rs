@@ -844,4 +844,36 @@ impl Lang {
             Lang::Es => format!("Error al comprobar: {err}"),
         }
     }
+    pub fn update_prompt_title(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "發現新版本",
+            Lang::ZhCn => "发现新版本",
+            Lang::En => "Update Available",
+            Lang::Ja => "アップデートのお知らせ",
+            Lang::Ko => "새 버전 알림",
+            Lang::Es => "Actualización disponible",
+        }
+    }
+    pub fn update_prompt_body(self, current: &str, latest: &str) -> String {
+        match self {
+            Lang::ZhTw => format!(
+                "偵測到新版本 v{latest}（目前版本 v{current}）。\r\n是否要前往下載最新安裝檔？"
+            ),
+            Lang::ZhCn => format!(
+                "检测到新版本 v{latest}（当前版本 v{current}）。\r\n是否要前往下载最新安装包？"
+            ),
+            Lang::En => format!(
+                "A new version v{latest} is available (current: v{current}).\r\nWould you like to download it now?"
+            ),
+            Lang::Ja => format!(
+                "新しいバージョン v{latest} が利用可能です（現在: v{current}）。\r\nダウンロードページを開きますか？"
+            ),
+            Lang::Ko => format!(
+                "새 버전 v{latest}을(를) 사용할 수 있습니다 (현재: v{current}).\r\n다운로드하시겠습니까?"
+            ),
+            Lang::Es => format!(
+                "Hay una nueva versión v{latest} disponible (actual: v{current}).\r\n¿Deseas descargarla ahora?"
+            ),
+        }
+    }
 }
