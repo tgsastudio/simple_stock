@@ -1,15 +1,15 @@
 [Setup]
 AppId={{8E9B7D4C-4B6E-4A2D-9C1F-51A2B3C4D5E6}
-AppName=simple_stock
-AppVersion=0.3.2
-VersionInfoVersion=0.3.2.0
+AppName=Stock TW
+AppVersion=1.0.0
+VersionInfoVersion=1.0.0.0
 AppPublisher=tgsastudio
 AppPublisherURL=https://github.com/tgsastudio/simple_stock
-DefaultDirName={autopf}\simple_stock
-DefaultGroupName=simple_stock
+DefaultDirName={autopf}\Stock TW
+DefaultGroupName=Stock TW
 AllowNoIcons=yes
 OutputDir=..\dist
-OutputBaseFilename=simple_stock-Setup-x64-v0.3.2
+OutputBaseFilename=StockTW-Setup-x64-v1.0.0
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\simple_stock.exe
 Compression=lzma2
@@ -34,12 +34,14 @@ Name: "chinesetraditional"; MessagesFile: "ChineseTraditional.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-english.StartupTask=Start simple_stock automatically when Windows starts
+english.StartupTask=Start Stock TW automatically when Windows starts
 english.StartupGroup=Startup Options:
-english.UpgradeNote=An existing version of simple_stock was detected (%1). Continuing will upgrade in-place while keeping your watchlist and settings.
-chinesetraditional.StartupTask=開機時自動啟動 simple_stock
+english.UpgradeNote=An existing version of Stock TW was detected (%1). Continuing will upgrade in-place while keeping your watchlist and settings.
+english.DeleteDataPrompt=Do you also want to delete your saved watchlist, holdings, and settings?%n%nChoose "No" to keep your data so it will be automatically loaded if you reinstall Stock TW later.
+chinesetraditional.StartupTask=開機時自動啟動 Stock TW
 chinesetraditional.StartupGroup=啟動選項:
-chinesetraditional.UpgradeNote=偵測到已安裝舊版 simple_stock (%1)。繼續安裝將會直接覆蓋升級，並完整保留您的自選股與持股設定。
+chinesetraditional.UpgradeNote=偵測到已安裝舊版 Stock TW (%1)。繼續安裝將會直接覆蓋升級，並完整保留您的自選股與持股設定。
+chinesetraditional.DeleteDataPrompt=是否要一併刪除已儲存的自選股、持股成本與個人化設定？%n%n選擇「否」將會保留您的加密資料，未來重新安裝 Stock TW 時會自動載入。
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -49,15 +51,15 @@ Name: "startup"; Description: "{cm:StartupTask}"; GroupDescription: "{cm:Startup
 Source: "..\target\release\simple_stock.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\simple_stock"; Filename: "{app}\simple_stock.exe"
-Name: "{group}\{cm:UninstallProgram,simple_stock}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\simple_stock"; Filename: "{app}\simple_stock.exe"; Tasks: desktopicon
+Name: "{group}\Stock TW"; Filename: "{app}\simple_stock.exe"
+Name: "{group}\{cm:UninstallProgram,Stock TW}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Stock TW"; Filename: "{app}\simple_stock.exe"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "simple_stock"; ValueData: """{app}\simple_stock.exe"""; Flags: uninsdeletevalue; Tasks: startup
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Stock TW"; ValueData: """{app}\simple_stock.exe"""; Flags: uninsdeletevalue; Tasks: startup
 
 [Run]
-Filename: "{app}\simple_stock.exe"; Description: "{cm:LaunchProgram,simple_stock}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\simple_stock.exe"; Description: "{cm:LaunchProgram,Stock TW}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function GetInstalledVersion(): String;
@@ -83,5 +85,36 @@ begin
     WizardForm.WelcomeLabel2.Caption :=
       FmtMessage(CustomMessage('UpgradeNote'), [PrevVer]) + #13#10#13#10 +
       WizardForm.WelcomeLabel2.Caption;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppDataDir: String;
+  VendorDir: String;
+  PortableDat: String;
+  PortableJson: String;
+begin
+  if (CurUninstallStep = usPostUninstall) and (not UninstallSilent) then
+  begin
+    AppDataDir := ExpandConstant('{userappdata}\tgsastudio\simple_stock');
+    VendorDir := ExpandConstant('{userappdata}\tgsastudio');
+    PortableDat := ExpandConstant('{app}\config.dat');
+    PortableJson := ExpandConstant('{app}\config.json');
+
+    if DirExists(AppDataDir) or FileExists(PortableDat) or FileExists(PortableJson) then
+    begin
+      if MsgBox(CustomMessage('DeleteDataPrompt'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+      begin
+        if DirExists(AppDataDir) then
+          DelTree(AppDataDir, True, True, True);
+        if DirExists(VendorDir) then
+          RemoveDir(VendorDir);
+        if FileExists(PortableDat) then
+          DeleteFile(PortableDat);
+        if FileExists(PortableJson) then
+          DeleteFile(PortableJson);
+      end;
+    end;
   end;
 end;

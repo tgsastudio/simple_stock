@@ -136,7 +136,7 @@ impl Lang {
     }
 
     pub fn ctx_pin_top(self) -> &'static str {
-        if self.is_zh() { "⬆ 移至最頂" } else { "⬆ Move to Top" }
+        if self.is_zh() { "移至最頂" } else { "Move to Top" }
     }
     pub fn ctx_move_up(self) -> &'static str {
         if self.is_zh() { "↑ 上移一格" } else { "↑ Move Up" }
@@ -145,7 +145,7 @@ impl Lang {
         if self.is_zh() { "↓ 下移一格" } else { "↓ Move Down" }
     }
     pub fn ctx_delete(self) -> &'static str {
-        if self.is_zh() { "🗑 移除自選股" } else { "🗑 Remove" }
+        if self.is_zh() { "移除自選股" } else { "Remove" }
     }
 
     pub fn add_title(self) -> &'static str {
@@ -283,10 +283,13 @@ impl Lang {
 
     // Position & P&L labels
     pub fn ctx_edit_position(self) -> &'static str {
-        if self.is_zh() { "✎ 編輯持股 (數量/成本)" } else { "✎ Edit Position (Qty/Cost)" }
+        if self.is_zh() { "編輯持股 (持有量/成本)" } else { "Edit Position (Qty/Cost)" }
+    }
+    pub fn btn_edit_pos_short(self) -> &'static str {
+        if self.is_zh() { "持股" } else { "Pos" }
     }
     pub fn tip_edit_position(self) -> &'static str {
-        if self.is_zh() { "設定持有數量與成本" } else { "Set shares & avg cost" }
+        if self.is_zh() { "編輯持有數量與成本（也可雙擊卡片）" } else { "Edit shares & avg cost (or double-click card)" }
     }
     pub fn edit_pos_title(self) -> &'static str {
         if self.is_zh() { "編輯持股" } else { "Edit Position" }
@@ -323,6 +326,36 @@ impl Lang {
             "🔒 資料已透過 Windows DPAPI 加密儲存，防止其他程式讀取"
         } else {
             "🔒 Data encrypted via Windows DPAPI to prevent unauthorized access"
+        }
+    }
+    pub fn btn_check_update(self) -> &'static str {
+        if self.is_zh() { "檢查更新" } else { "Check Updates" }
+    }
+    pub fn update_checking(self) -> &'static str {
+        if self.is_zh() { "正在檢查 GitHub 最新版本..." } else { "Checking GitHub releases..." }
+    }
+    pub fn update_up_to_date(self, ver: &str) -> String {
+        if self.is_zh() {
+            format!("目前已是最新版本 (v{ver})")
+        } else {
+            format!("Up to date (v{ver})")
+        }
+    }
+    pub fn update_available(self, ver: &str) -> String {
+        if self.is_zh() {
+            format!("發現新版本 v{ver}！")
+        } else {
+            format!("New version v{ver} available!")
+        }
+    }
+    pub fn btn_download_update(self) -> &'static str {
+        if self.is_zh() { "前往下載" } else { "Download" }
+    }
+    pub fn update_failed(self, err: &str) -> String {
+        if self.is_zh() {
+            format!("檢查更新失敗：{err}")
+        } else {
+            format!("Update check failed: {err}")
         }
     }
 }

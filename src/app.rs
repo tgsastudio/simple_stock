@@ -1,26 +1,20 @@
 use crate::config::{
-    AppConfig, ColorScheme, LanguageSetting, Market, MarketFilter, RefreshMode, StockItem,
-    ViewMode,
+    AppConfig, ColorScheme, LanguageSetting, Market, MarketFilter, RefreshMode, SortDisplay,
+    StockItem, ViewMode, WindowRect,
 };
 use crate::fonts::configure_fonts;
 use crate::i18n::{Lang, resolve_lang};
 use crate::market_hours::{UsPhase, current_market_status};
 use crate::quote::{QuoteData, SearchResult, guess_market, search_symbols};
+use crate::updater::{UpdateCheckResult, check_for_updates};
 use crate::worker::{QuoteWorker, WorkerCommand, WorkerEvent, WorkerStatus};
 use egui::{
-    Align, Color32, Context, CornerRadius, Frame, Id, Layout, Margin, RichText, Sense, Stroke,
-    Vec2, ViewportCommand, WindowLevel,
+    Align, Color32, Context, CornerRadius, Frame, Id, Layout, Margin, OpenUrl, Pos2, RichText,
+    Sense, Stroke, Vec2, ViewportCommand, WindowLevel,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SortDisplay {
-    Custom,
-    ChangeDesc,
-    ChangeAsc,
-}
 
 fn format_number(val: f64, decimals: usize) -> String {
     let neg = val < 0.0;
@@ -69,7 +63,6 @@ pub struct StockApp {
     // UI dialogs
     show_add_dialog: bool,
     show_settings_dialog: bool,
-    sort_display: SortDisplay,
 
     // Add stock form
     add_symbol_input: String,
@@ -86,6 +79,11 @@ pub struct StockApp {
     edit_pos_idx: Option<usize>,
     edit_shares_input: String,
     edit_cost_input: String,
+
+    // Update checker state
+    update_checking: bool,
+    update_result: Option<Result<UpdateCheckResult, String>>,
+    update_rx: Option<Receiver<Result<UpdateCheckResult, String>>>,
 
     // Drag-and-drop state
     dragging_idx: Option<usize>,
@@ -107,7 +105,6 @@ impl StockApp {
             applied_initial_viewport: false,
             show_add_dialog: false,
             show_settings_dialog: false,
-            sort_display: SortDisplay::Custom,
             add_symbol_input: String::new(),
             add_name_input: String::new(),
             add_shares_input: String::new(),
@@ -120,6 +117,9 @@ impl StockApp {
             edit_pos_idx: None,
             edit_shares_input: String::new(),
             edit_cost_input: String::new(),
+            update_checking: false,
+            update_result: None,
+            update_rx: None,
             dragging_idx: None,
         }
     }
@@ -136,6 +136,35 @@ impl StockApp {
             .send(WorkerCommand::UpdateConfig(self.config.clone()));
     }
 
+    fn capture_window_geometry(&mut self, ctx: &Context) {
+        let (minimized, outer, inner) = ctx.input(|i| {
+            let vp = i.viewport();
+            (
+                vp.minimized.unwrap_or(false),
+                vp.outer_rect,
+                vp.inner_rect,
+            )
+        });
+        if minimized {
+            return;
+        }
+        if let (Some(out_r), Some(in_r)) = (outer, inner) {
+            let w = in_r.width();
+            let h = in_r.height();
+            let x = out_r.min.x;
+            let y = out_r.min.y;
+            if w >= 200.0 && h >= 180.0 && x > -2000.0 && x < 8000.0 && y > -2000.0 && y < 8000.0 {
+                let rect = WindowRect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                };
+                self.config.set_window_rect_for(self.config.view_mode, rect);
+            }
+        }
+    }
+
     fn apply_viewport_for_mode(&mut self, ctx: &Context, resize: bool) {
         let mode = self.config.view_mode;
         let decorations = mode != ViewMode::FloatingWidget;
@@ -149,8 +178,20 @@ impl StockApp {
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
 
         if resize {
-            let [w, h] = mode.default_size();
-            ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(w, h)));
+            if let Some(saved) = self.config.window_rect_for(mode) {
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
+                    saved.width.max(220.0),
+                    saved.height.max(200.0),
+                )));
+                if saved.x > -2000.0 && saved.x < 8000.0 && saved.y > -2000.0 && saved.y < 8000.0 {
+                    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
+                        saved.x, saved.y,
+                    )));
+                }
+            } else {
+                let [w, h] = mode.default_size();
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(w, h)));
+            }
         }
     }
 
@@ -158,12 +199,29 @@ impl StockApp {
         if self.config.view_mode == new_mode {
             return;
         }
+        self.capture_window_geometry(ctx);
         self.config.view_mode = new_mode;
         if new_mode == ViewMode::FloatingWidget {
             self.config.always_on_top = true;
         }
         self.apply_viewport_for_mode(ctx, true);
         self.save_and_sync();
+    }
+
+    fn start_update_check(&mut self, ctx: &Context) {
+        if self.update_checking {
+            return;
+        }
+        self.update_checking = true;
+        self.update_result = None;
+        let (tx, rx) = mpsc::channel();
+        self.update_rx = Some(rx);
+        let ctx_clone = ctx.clone();
+        thread::spawn(move || {
+            let res = check_for_updates(env!("CARGO_PKG_VERSION"));
+            let _ = tx.send(res);
+            ctx_clone.request_repaint();
+        });
     }
 
     fn open_edit_position(&mut self, idx: usize) {
@@ -221,6 +279,14 @@ impl StockApp {
                         self.search_error = Some(e);
                     }
                 }
+            }
+        }
+
+        if let Some(rx) = &self.update_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.update_checking = false;
+                self.update_rx = None;
+                self.update_result = Some(res);
             }
         }
     }
@@ -324,7 +390,7 @@ impl StockApp {
             let title_resp = ui.add(
                 egui::Label::new(
                     RichText::new(if mode == ViewMode::Standard {
-                        "simple_stock"
+                        "Stock TW"
                     } else {
                         "📈"
                     })
@@ -456,30 +522,40 @@ impl StockApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let mut sort_changed = false;
                 egui::ComboBox::from_id_salt("sort_display_combo")
                     .width(116.0)
-                    .selected_text(match self.sort_display {
+                    .selected_text(match self.config.sort_display {
                         SortDisplay::Custom => lang.sort_custom(),
                         SortDisplay::ChangeDesc => lang.sort_desc(),
                         SortDisplay::ChangeAsc => lang.sort_asc(),
                     })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.sort_display,
-                            SortDisplay::Custom,
-                            lang.sort_custom(),
-                        );
-                        ui.selectable_value(
-                            &mut self.sort_display,
-                            SortDisplay::ChangeDesc,
-                            lang.sort_desc(),
-                        );
-                        ui.selectable_value(
-                            &mut self.sort_display,
-                            SortDisplay::ChangeAsc,
-                            lang.sort_asc(),
-                        );
+                        sort_changed |= ui
+                            .selectable_value(
+                                &mut self.config.sort_display,
+                                SortDisplay::Custom,
+                                lang.sort_custom(),
+                            )
+                            .changed();
+                        sort_changed |= ui
+                            .selectable_value(
+                                &mut self.config.sort_display,
+                                SortDisplay::ChangeDesc,
+                                lang.sort_desc(),
+                            )
+                            .changed();
+                        sort_changed |= ui
+                            .selectable_value(
+                                &mut self.config.sort_display,
+                                SortDisplay::ChangeAsc,
+                                lang.sort_asc(),
+                            )
+                            .changed();
                     });
+                if sort_changed {
+                    self.save_and_sync();
+                }
             });
         });
     }
@@ -578,7 +654,7 @@ impl StockApp {
             .map(|(i, _)| i)
             .collect();
 
-        match self.sort_display {
+        match self.config.sort_display {
             SortDisplay::Custom => {}
             SortDisplay::ChangeDesc => {
                 indices.sort_by(|&a, &b| {
@@ -623,7 +699,7 @@ impl StockApp {
         let mut action_pin_top: Option<usize> = None;
         let mut action_delete: Option<usize> = None;
         let mut action_edit_pos: Option<usize> = None;
-        let allow_drag = self.sort_display == SortDisplay::Custom
+        let allow_drag = self.config.sort_display == SortDisplay::Custom
             && self.config.market_filter == MarketFilter::All;
 
         egui::ScrollArea::vertical()
@@ -687,8 +763,17 @@ impl StockApp {
                                                     .size(if is_compact { 13.0 } else { 14.0 }),
                                             );
                                             if !is_compact {
+                                                let pos_btn_text = if item.has_position() {
+                                                    RichText::new(lang.btn_edit_pos_short())
+                                                        .color(Color32::from_rgb(100, 195, 255))
+                                                        .size(10.5)
+                                                } else {
+                                                    RichText::new(lang.btn_edit_pos_short())
+                                                        .weak()
+                                                        .size(10.5)
+                                                };
                                                 if ui
-                                                    .small_button(RichText::new("✎").weak().size(10.5))
+                                                    .small_button(pos_btn_text)
                                                     .on_hover_text(lang.tip_edit_position())
                                                     .clicked()
                                                 {
@@ -812,6 +897,10 @@ impl StockApp {
                         });
 
                     let row_resp = frame_resp.response.interact(Sense::click());
+
+                    if row_resp.double_clicked() {
+                        action_edit_pos = Some(idx);
+                    }
 
                     if let Some(drag_from) = self.dragging_idx {
                         if drag_from != idx && row_resp.hovered() {
@@ -972,13 +1061,20 @@ impl StockApp {
         .resizable(false)
         .default_width(270.0)
         .show(ctx, |ui| {
+            let mut enter_pressed = false;
             ui.horizontal(|ui| {
                 ui.label(lang.label_shares());
-                ui.text_edit_singleline(&mut self.edit_shares_input);
+                let r = ui.text_edit_singleline(&mut self.edit_shares_input);
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    enter_pressed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(lang.label_avg_cost());
-                ui.text_edit_singleline(&mut self.edit_cost_input);
+                let r = ui.text_edit_singleline(&mut self.edit_cost_input);
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    enter_pressed = true;
+                }
             });
 
             let parsed_shares = self
@@ -995,20 +1091,36 @@ impl StockApp {
                 .unwrap_or(0.0);
             if parsed_shares > 0.0 && parsed_cost > 0.0 {
                 let dec = if item.market == Market::Tw { 0 } else { 2 };
+                let cost_basis = parsed_shares * parsed_cost;
                 ui.label(
                     RichText::new(format!(
                         "{}{}",
                         lang.label_cost_basis(),
-                        format_number(parsed_shares * parsed_cost, dec)
+                        format_number(cost_basis, dec)
                     ))
                     .weak()
                     .size(11.5),
                 );
+                if let Some(q) = self.quotes.get(&item.key()) {
+                    let profit = parsed_shares * q.price - cost_basis;
+                    let pct = (profit / cost_basis) * 100.0;
+                    let sign = if profit > 0.0 { "+" } else { "" };
+                    ui.label(
+                        RichText::new(format!(
+                            "{}: {sign}{} ({sign}{pct:.2}%)",
+                            lang.label_pnl(),
+                            format_number(profit, dec)
+                        ))
+                        .color(self.price_color(item.market, profit))
+                        .strong()
+                        .size(11.5),
+                    );
+                }
             }
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button(lang.btn_save()).clicked() {
+                if ui.button(lang.btn_save()).clicked() || enter_pressed {
                     save_clicked = true;
                 }
                 if ui.button(lang.btn_clear_pos()).clicked() {
@@ -1306,11 +1418,61 @@ impl StockApp {
                         .weak()
                         .size(10.0),
                 );
-                ui.label(
-                    RichText::new(format!("simple_stock v{}", env!("CARGO_PKG_VERSION")))
-                        .weak()
-                        .size(10.0),
-                );
+                ui.add_space(4.0);
+                let mut trigger_check = false;
+                let mut open_download_url: Option<String> = None;
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("Stock TW v{}", env!("CARGO_PKG_VERSION")))
+                            .weak()
+                            .size(11.0),
+                    );
+                    if ui
+                        .add_enabled(!self.update_checking, egui::Button::new(lang.btn_check_update()))
+                        .clicked()
+                    {
+                        trigger_check = true;
+                    }
+                });
+                if self.update_checking {
+                    ui.label(RichText::new(lang.update_checking()).weak().size(11.0));
+                } else if let Some(res) = &self.update_result {
+                    match res {
+                        Ok(info) if info.has_update => {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(lang.update_available(&info.latest_version))
+                                        .color(Color32::from_rgb(250, 190, 60))
+                                        .strong()
+                                        .size(11.0),
+                                );
+                                if ui.small_button(lang.btn_download_update()).clicked() {
+                                    open_download_url = Some(info.download_url.clone());
+                                }
+                            });
+                        }
+                        Ok(info) => {
+                            ui.label(
+                                RichText::new(lang.update_up_to_date(&info.latest_version))
+                                    .color(Color32::from_rgb(100, 195, 145))
+                                    .size(11.0),
+                            );
+                        }
+                        Err(e) => {
+                            ui.label(
+                                RichText::new(lang.update_failed(e))
+                                    .color(Color32::from_rgb(245, 130, 100))
+                                    .size(10.5),
+                            );
+                        }
+                    }
+                }
+                if trigger_check {
+                    self.start_update_check(ctx);
+                }
+                if let Some(url) = open_download_url {
+                    ctx.open_url(OpenUrl::new_tab(url));
+                }
             });
 
         self.show_settings_dialog = open;
@@ -1363,7 +1525,11 @@ impl eframe::App for StockApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         if !self.applied_initial_viewport {
             self.applied_initial_viewport = true;
-            self.apply_viewport_for_mode(ctx, false);
+            if self.config.always_on_top {
+                ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
+            }
+            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
         }
 
         let is_minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
@@ -1376,6 +1542,7 @@ impl eframe::App for StockApp {
         }
 
         self.drain_worker_events();
+        self.capture_window_geometry(ctx);
 
         if self.config.dark_mode {
             ctx.set_visuals(egui::Visuals::dark());

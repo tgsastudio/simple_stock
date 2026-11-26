@@ -124,6 +124,21 @@ pub enum MarketFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortDisplay {
+    Custom,
+    ChangeDesc,
+    ChangeAsc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LanguageSetting {
     Auto,
     ZhTw,
@@ -144,7 +159,11 @@ pub struct AppConfig {
     pub opacity: f32,
     pub dark_mode: bool,
     pub market_filter: MarketFilter,
+    pub sort_display: SortDisplay,
     pub language: LanguageSetting,
+    pub window_standard: Option<WindowRect>,
+    pub window_sidebar: Option<WindowRect>,
+    pub window_floating: Option<WindowRect>,
 }
 
 impl Default for AppConfig {
@@ -204,12 +223,31 @@ impl Default for AppConfig {
             opacity: 0.92,
             dark_mode: true,
             market_filter: MarketFilter::All,
+            sort_display: SortDisplay::Custom,
             language: LanguageSetting::Auto,
+            window_standard: None,
+            window_sidebar: None,
+            window_floating: None,
         }
     }
 }
 
 impl AppConfig {
+    pub fn window_rect_for(&self, mode: ViewMode) -> Option<WindowRect> {
+        match mode {
+            ViewMode::Standard => self.window_standard,
+            ViewMode::Sidebar => self.window_sidebar,
+            ViewMode::FloatingWidget => self.window_floating,
+        }
+    }
+
+    pub fn set_window_rect_for(&mut self, mode: ViewMode, rect: WindowRect) {
+        match mode {
+            ViewMode::Standard => self.window_standard = Some(rect),
+            ViewMode::Sidebar => self.window_sidebar = Some(rect),
+            ViewMode::FloatingWidget => self.window_floating = Some(rect),
+        }
+    }
     pub fn config_path() -> PathBuf {
         // Portable mode: if config.dat or legacy config.json exists next to the executable, use it.
         if let Ok(exe) = std::env::current_exe() {

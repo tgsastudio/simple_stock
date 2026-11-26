@@ -8,6 +8,7 @@ mod icon;
 mod market_hours;
 mod quote;
 mod storage;
+mod updater;
 mod worker;
 
 use crate::app::StockApp;
@@ -28,28 +29,45 @@ fn create_app_mutex() -> *mut core::ffi::c_void {
 }
 
 fn main() -> eframe::Result<()> {
-    // Keep a named Windows mutex alive while running so the installer can detect
-    // and cleanly coordinate upgrades via Windows Restart Manager.
     #[cfg(target_os = "windows")]
     let _app_mutex = create_app_mutex();
 
     let initial_cfg = AppConfig::load();
-    let [w, h] = initial_cfg.view_mode.default_size();
     let decorations = initial_cfg.view_mode != ViewMode::FloatingWidget;
+    let saved_rect = initial_cfg.window_rect_for(initial_cfg.view_mode);
+
+    let (w, h, pos) = if let Some(r) = saved_rect {
+        let valid_pos = if r.x > -2000.0 && r.x < 8000.0 && r.y > -2000.0 && r.y < 8000.0 {
+            Some([r.x, r.y])
+        } else {
+            None
+        };
+        (r.width.max(220.0), r.height.max(200.0), valid_pos)
+    } else {
+        let [dw, dh] = initial_cfg.view_mode.default_size();
+        (dw, dh, Some([120.0, 120.0]))
+    };
+
+    let mut vp = egui::ViewportBuilder::default()
+        .with_title("Stock TW")
+        .with_icon(icon::build_window_icon())
+        .with_inner_size([w, h])
+        .with_min_inner_size([220.0, 200.0])
+        .with_decorations(decorations)
+        .with_visible(true)
+        .with_transparent(true);
+
+    if let Some([px, py]) = pos {
+        vp = vp.with_position([px, py]);
+    }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("simple_stock")
-            .with_icon(icon::build_window_icon())
-            .with_inner_size([w, h])
-            .with_min_inner_size([220.0, 200.0])
-            .with_decorations(decorations)
-            .with_transparent(true),
+        viewport: vp,
         ..Default::default()
     };
 
     eframe::run_native(
-        "simple_stock",
+        "Stock TW",
         options,
         Box::new(|cc| Ok(Box::new(StockApp::new(cc)))),
     )
