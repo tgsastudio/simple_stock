@@ -50,16 +50,6 @@ impl RefreshMode {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            RefreshMode::Fast5s => "5 秒 (極速)",
-            RefreshMode::Balanced15s => "15 秒 (均衡)",
-            RefreshMode::Eco30s => "30 秒 (省電)",
-            RefreshMode::UltraEco60s => "60 秒 (超省電)",
-            RefreshMode::Manual => "手動刷新",
-        }
-    }
-
     pub fn all() -> [RefreshMode; 5] {
         [
             RefreshMode::Fast5s,
@@ -96,14 +86,6 @@ pub enum ColorScheme {
 }
 
 impl ColorScheme {
-    pub fn label(self) -> &'static str {
-        match self {
-            ColorScheme::TwRedUp => "紅漲綠跌 (台股習慣)",
-            ColorScheme::UsGreenUp => "綠漲紅跌 (美股習慣)",
-            ColorScheme::AutoByMarket => "依市場自動配色",
-        }
-    }
-
     pub fn is_red_up(self, market: Market) -> bool {
         match self {
             ColorScheme::TwRedUp => true,
@@ -120,6 +102,13 @@ pub enum MarketFilter {
     UsOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LanguageSetting {
+    Auto,
+    ZhTw,
+    En,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -134,6 +123,7 @@ pub struct AppConfig {
     pub opacity: f32,
     pub dark_mode: bool,
     pub market_filter: MarketFilter,
+    pub language: LanguageSetting,
 }
 
 impl Default for AppConfig {
@@ -181,6 +171,7 @@ impl Default for AppConfig {
             opacity: 0.92,
             dark_mode: true,
             market_filter: MarketFilter::All,
+            language: LanguageSetting::Auto,
         }
     }
 }

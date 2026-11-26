@@ -1,10 +1,12 @@
 use crate::config::{
-    AppConfig, ColorScheme, Market, MarketFilter, RefreshMode, StockItem, ViewMode,
+    AppConfig, ColorScheme, LanguageSetting, Market, MarketFilter, RefreshMode, StockItem,
+    ViewMode,
 };
 use crate::fonts::configure_fonts;
-use crate::market_hours::current_market_status;
+use crate::i18n::{Lang, resolve_lang};
+use crate::market_hours::{UsPhase, current_market_status};
 use crate::quote::{QuoteData, SearchResult, guess_market, search_symbols};
-use crate::worker::{QuoteWorker, WorkerCommand, WorkerEvent};
+use crate::worker::{QuoteWorker, WorkerCommand, WorkerEvent, WorkerStatus};
 use egui::{
     Align, Color32, Context, CornerRadius, Frame, Id, Layout, Margin, RichText, Sense, Stroke,
     Vec2, ViewportCommand, WindowLevel,
@@ -24,7 +26,7 @@ pub struct StockApp {
     config: AppConfig,
     quotes: HashMap<String, QuoteData>,
     worker: QuoteWorker,
-    status_text: String,
+    worker_status: WorkerStatus,
     error_text: Option<String>,
     last_minimized: bool,
     applied_initial_viewport: bool,
@@ -57,7 +59,7 @@ impl StockApp {
             config,
             quotes: HashMap::new(),
             worker,
-            status_text: "初始化中...".to_string(),
+            worker_status: WorkerStatus::Initializing,
             error_text: None,
             last_minimized: false,
             applied_initial_viewport: false,
@@ -73,6 +75,10 @@ impl StockApp {
             search_rx: None,
             dragging_idx: None,
         }
+    }
+
+    fn lang(&self) -> Lang {
+        resolve_lang(self.config.language)
     }
 
     fn save_and_sync(&self) {
@@ -118,7 +124,6 @@ impl StockApp {
             match evt {
                 WorkerEvent::QuotesUpdated(map) => {
                     for (k, q) in map {
-                        // Update stored name if it was blank or matched symbol
                         if let Some(item) = self.config.watchlist.iter_mut().find(|i| i.key() == k)
                         {
                             if (item.name.is_empty() || item.name == item.symbol)
@@ -132,7 +137,7 @@ impl StockApp {
                     self.error_text = None;
                 }
                 WorkerEvent::Status(s) => {
-                    self.status_text = s;
+                    self.worker_status = s;
                 }
                 WorkerEvent::Error(e) => {
                     self.error_text = Some(e);
@@ -240,10 +245,10 @@ impl StockApp {
 
     fn render_top_bar(&mut self, ui: &mut egui::Ui, ctx: &Context) {
         let mode = self.config.view_mode;
+        let lang = self.lang();
         let status = current_market_status(self.config.include_us_extended);
 
         ui.horizontal(|ui| {
-            // In FloatingWidget mode, dragging the header moves the borderless window
             let title_resp = ui.add(
                 egui::Label::new(
                     RichText::new(if mode == ViewMode::Standard {
@@ -271,32 +276,50 @@ impl StockApp {
                 } else {
                     Color32::from_rgb(130, 135, 145)
                 };
+                let tw_tip = if status.tw_open {
+                    lang.tw_open()
+                } else {
+                    lang.tw_closed()
+                };
+                let us_tip = match status.us_phase {
+                    UsPhase::Regular => lang.us_open(),
+                    UsPhase::Extended => lang.us_extended(),
+                    UsPhase::Closed => lang.us_closed(),
+                };
                 ui.label(RichText::new("●").color(tw_dot).size(10.0))
-                    .on_hover_text(status.tw_label);
+                    .on_hover_text(tw_tip);
                 ui.label(RichText::new("TW").size(11.0).weak());
                 ui.label(RichText::new("●").color(us_dot).size(10.0))
-                    .on_hover_text(status.us_label);
+                    .on_hover_text(us_tip);
                 ui.label(RichText::new("US").size(11.0).weak());
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if mode == ViewMode::FloatingWidget {
-                    if ui.small_button("✕").on_hover_text("關閉").clicked() {
+                    if ui.small_button("✕").on_hover_text(lang.tip_close()).clicked() {
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
 
-                if ui.small_button("⚙").on_hover_text("設定").clicked() {
+                if ui
+                    .small_button("⚙")
+                    .on_hover_text(lang.tip_settings())
+                    .clicked()
+                {
                     self.show_settings_dialog = !self.show_settings_dialog;
                 }
 
-                if ui.small_button("＋").on_hover_text("新增自選股").clicked() {
+                if ui.small_button("＋").on_hover_text(lang.tip_add()).clicked() {
                     self.show_add_dialog = !self.show_add_dialog;
                 }
 
-                if ui.small_button("⟳").on_hover_text("立即刷新").clicked() {
+                if ui
+                    .small_button("⟳")
+                    .on_hover_text(lang.tip_refresh())
+                    .clicked()
+                {
                     let _ = self.worker.tx.send(WorkerCommand::ForceRefresh);
-                    self.status_text = "更新中...".to_string();
+                    self.worker_status = WorkerStatus::Updating;
                 }
 
                 let pin_text = if self.config.always_on_top {
@@ -306,7 +329,7 @@ impl StockApp {
                 };
                 if ui
                     .small_button(pin_text)
-                    .on_hover_text("切換視窗置頂")
+                    .on_hover_text(lang.tip_pin())
                     .clicked()
                 {
                     self.config.always_on_top = !self.config.always_on_top;
@@ -314,7 +337,6 @@ impl StockApp {
                     self.save_and_sync();
                 }
 
-                // Mode switcher buttons
                 for m in [
                     ViewMode::FloatingWidget,
                     ViewMode::Sidebar,
@@ -322,9 +344,9 @@ impl StockApp {
                 ] {
                     let selected = self.config.view_mode == m;
                     let label = match m {
-                        ViewMode::Standard => "標準",
-                        ViewMode::Sidebar => "側邊",
-                        ViewMode::FloatingWidget => "浮動",
+                        ViewMode::Standard => lang.mode_standard(),
+                        ViewMode::Sidebar => lang.mode_sidebar(),
+                        ViewMode::FloatingWidget => lang.mode_floating(),
                     };
                     if ui
                         .selectable_label(selected, RichText::new(label).size(11.0))
@@ -341,11 +363,12 @@ impl StockApp {
         if self.config.view_mode != ViewMode::Standard {
             return;
         }
+        let lang = self.lang();
         ui.horizontal(|ui| {
             for (f, label) in [
-                (MarketFilter::All, "全部"),
-                (MarketFilter::TwOnly, "台股"),
-                (MarketFilter::UsOnly, "美股"),
+                (MarketFilter::All, lang.filter_all()),
+                (MarketFilter::TwOnly, lang.filter_tw()),
+                (MarketFilter::UsOnly, lang.filter_us()),
             ] {
                 if ui
                     .selectable_label(self.config.market_filter == f, label)
@@ -358,27 +381,27 @@ impl StockApp {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 egui::ComboBox::from_id_salt("sort_display_combo")
-                    .width(96.0)
+                    .width(116.0)
                     .selected_text(match self.sort_display {
-                        SortDisplay::Custom => "自訂順序",
-                        SortDisplay::ChangeDesc => "漲幅高→低",
-                        SortDisplay::ChangeAsc => "漲幅低→高",
+                        SortDisplay::Custom => lang.sort_custom(),
+                        SortDisplay::ChangeDesc => lang.sort_desc(),
+                        SortDisplay::ChangeAsc => lang.sort_asc(),
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.sort_display,
                             SortDisplay::Custom,
-                            "自訂順序",
+                            lang.sort_custom(),
                         );
                         ui.selectable_value(
                             &mut self.sort_display,
                             SortDisplay::ChangeDesc,
-                            "漲幅高→低",
+                            lang.sort_desc(),
                         );
                         ui.selectable_value(
                             &mut self.sort_display,
                             SortDisplay::ChangeAsc,
-                            "漲幅低→高",
+                            lang.sort_asc(),
                         );
                     });
             });
@@ -388,8 +411,8 @@ impl StockApp {
     fn render_watchlist(&mut self, ui: &mut egui::Ui) {
         let mode = self.config.view_mode;
         let is_compact = mode != ViewMode::Standard;
+        let lang = self.lang();
 
-        // Build ordered indices according to filter and temporary sort
         let mut indices: Vec<usize> = self
             .config
             .watchlist
@@ -439,7 +462,7 @@ impl StockApp {
 
         if indices.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("尚未設定自選股，請點擊右上角 ＋ 新增").weak());
+                ui.label(RichText::new(lang.empty_watchlist()).weak());
             });
             return;
         }
@@ -479,7 +502,6 @@ impl StockApp {
                         ))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                // Drag handle in Custom order
                                 if allow_drag && !is_compact {
                                     let handle = ui.add(
                                         egui::Label::new(RichText::new("☰").weak().size(13.0))
@@ -488,10 +510,9 @@ impl StockApp {
                                     if handle.drag_started() {
                                         self.dragging_idx = Some(idx);
                                     }
-                                    handle.on_hover_text("拖曳調整排序");
+                                    handle.on_hover_text(lang.tip_drag_reorder());
                                 }
 
-                                // Left: Symbol + Name
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         let badge_color = match item.market {
@@ -525,7 +546,6 @@ impl StockApp {
                                     );
                                 });
 
-                                // Right: Price + Change
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if let Some(q) = &quote {
                                         let color = self.price_color(item.market, q.change);
@@ -550,10 +570,7 @@ impl StockApp {
                                                 |ui| {
                                                     let sign = if q.change > 0.0 { "+" } else { "" };
                                                     let detail = if is_compact {
-                                                        format!(
-                                                            "{sign}{:.2}%",
-                                                            q.change_percent
-                                                        )
+                                                        format!("{sign}{:.2}%", q.change_percent)
                                                     } else {
                                                         format!(
                                                             "{sign}{:.2} ({sign}{:.2}%)",
@@ -581,14 +598,12 @@ impl StockApp {
 
                     let row_resp = frame_resp.response.interact(Sense::click());
 
-                    // Drag-drop target check
                     if let Some(drag_from) = self.dragging_idx {
                         if drag_from != idx && row_resp.hovered() {
                             action_move = Some((drag_from, idx));
                         }
                     }
 
-                    // Hover tooltip with detailed intraday stats
                     if let Some(q) = &quote {
                         row_resp.clone().on_hover_ui(|ui| {
                             ui.label(
@@ -596,45 +611,45 @@ impl StockApp {
                                     .strong(),
                             );
                             ui.separator();
-                            ui.label(format!("昨收：{:.2}", q.prev_close));
+                            ui.label(format!("{}{:.2}", lang.prev_close(), q.prev_close));
                             if let Some(o) = q.open {
-                                ui.label(format!("開盤：{o:.2}"));
+                                ui.label(format!("{}{o:.2}", lang.open_price()));
                             }
                             if let (Some(h), Some(l)) = (q.high, q.low) {
-                                ui.label(format!("最高 / 最低：{h:.2} / {l:.2}"));
+                                ui.label(format!("{}{h:.2} / {l:.2}", lang.high_low()));
                             }
                             if let Some(v) = q.volume {
-                                ui.label(format!("成交量：{v}"));
+                                ui.label(format!("{}{v}", lang.volume()));
                             }
                             ui.label(
-                                RichText::new(format!(
-                                    "來源：{} ・ 更新：{}",
-                                    q.source, q.updated_at
-                                ))
-                                .weak()
-                                .size(11.0),
+                                RichText::new(lang.source_updated(q.source, &q.updated_at))
+                                    .weak()
+                                    .size(11.0),
                             );
                         });
                     }
 
-                    // Right-click context menu for reordering & deleting
                     row_resp.context_menu(|ui| {
-                        if ui.button("⬆ 移至最頂").clicked() {
+                        if ui.button(lang.ctx_pin_top()).clicked() {
                             action_pin_top = Some(idx);
                             ui.close_menu();
                         }
-                        if idx > 0 && ui.button("↑ 上移一格").clicked() {
+                        if idx > 0 && ui.button(lang.ctx_move_up()).clicked() {
                             action_move = Some((idx, idx - 1));
                             ui.close_menu();
                         }
-                        if idx + 1 < self.config.watchlist.len() && ui.button("↓ 下移一格").clicked()
+                        if idx + 1 < self.config.watchlist.len()
+                            && ui.button(lang.ctx_move_down()).clicked()
                         {
                             action_move = Some((idx, idx + 1));
                             ui.close_menu();
                         }
                         ui.separator();
                         if ui
-                            .button(RichText::new("🗑 移除自選股").color(Color32::from_rgb(240, 90, 90)))
+                            .button(
+                                RichText::new(lang.ctx_delete())
+                                    .color(Color32::from_rgb(240, 90, 90)),
+                            )
                             .clicked()
                         {
                             action_delete = Some(idx);
@@ -644,7 +659,6 @@ impl StockApp {
                 }
             });
 
-        // Stop dragging when mouse button is released
         if self.dragging_idx.is_some() && !ui.input(|i| i.pointer.primary_down()) {
             self.dragging_idx = None;
         }
@@ -676,21 +690,22 @@ impl StockApp {
         if !self.show_add_dialog {
             return;
         }
+        let lang = self.lang();
         let mut open = self.show_add_dialog;
-        egui::Window::new("新增自選股")
+        egui::Window::new(lang.add_title())
             .id(Id::new("add_stock_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(300.0)
+            .default_width(310.0)
             .show(ctx, |ui| {
-                ui.label("輸入台股代碼 (如 2330, 0050) 或美股代碼 (如 AAPL, NVDA)：");
+                ui.label(lang.add_prompt());
                 ui.horizontal(|ui| {
                     let resp = ui.text_edit_singleline(&mut self.add_symbol_input);
                     if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         self.start_search(ctx);
                     }
-                    if ui.button("線上搜尋").clicked() {
+                    if ui.button(lang.btn_search()).clicked() {
                         self.start_search(ctx);
                     }
                 });
@@ -698,15 +713,15 @@ impl StockApp {
                 let guessed = guess_market(&self.add_symbol_input);
                 let selected_market = self.add_market_override.unwrap_or(guessed);
                 ui.horizontal(|ui| {
-                    ui.label("市場：");
+                    ui.label(lang.label_market());
                     if ui
-                        .selectable_label(selected_market == Market::Tw, "台股 (TW)")
+                        .selectable_label(selected_market == Market::Tw, lang.market_tw())
                         .clicked()
                     {
                         self.add_market_override = Some(Market::Tw);
                     }
                     if ui
-                        .selectable_label(selected_market == Market::Us, "美股 (US)")
+                        .selectable_label(selected_market == Market::Us, lang.market_us())
                         .clicked()
                     {
                         self.add_market_override = Some(Market::Us);
@@ -714,11 +729,12 @@ impl StockApp {
                 });
 
                 ui.horizontal(|ui| {
-                    ui.label("名稱 (可留空自動抓)：");
+                    ui.label(lang.label_name_opt());
                     ui.text_edit_singleline(&mut self.add_name_input);
                 });
 
-                if ui.button("直接加入自選股").clicked() && !self.add_symbol_input.trim().is_empty()
+                if ui.button(lang.btn_add_direct()).clicked()
+                    && !self.add_symbol_input.trim().is_empty()
                 {
                     let sym = self.add_symbol_input.clone();
                     let name = self.add_name_input.clone();
@@ -730,13 +746,17 @@ impl StockApp {
 
                 if self.search_loading {
                     ui.separator();
-                    ui.label("搜尋中...");
+                    ui.label(lang.searching());
                 } else if let Some(err) = &self.search_error {
                     ui.separator();
                     ui.label(RichText::new(err).color(Color32::from_rgb(240, 100, 100)));
                 } else if !self.search_results.is_empty() {
                     ui.separator();
-                    ui.label(RichText::new("搜尋結果（點擊加入）：").strong().size(12.0));
+                    ui.label(
+                        RichText::new(lang.search_results_header())
+                            .strong()
+                            .size(12.0),
+                    );
                     let results = self.search_results.clone();
                     egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                         for r in results {
@@ -761,24 +781,29 @@ impl StockApp {
         if !self.show_settings_dialog {
             return;
         }
+        let lang = self.lang();
         let mut open = self.show_settings_dialog;
         let mut changed = false;
         let mut viewport_changed = false;
 
-        egui::Window::new("設定")
+        egui::Window::new(lang.settings_title())
             .id(Id::new("settings_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(300.0)
+            .default_width(310.0)
             .show(ctx, |ui| {
-                ui.label(RichText::new("刷新頻率與省電").strong());
+                ui.label(RichText::new(lang.sec_refresh()).strong());
                 egui::ComboBox::from_id_salt("refresh_mode_combo")
-                    .selected_text(self.config.refresh_mode.label())
+                    .selected_text(lang.refresh_label(self.config.refresh_mode))
                     .show_ui(ui, |ui| {
                         for mode in RefreshMode::all() {
                             if ui
-                                .selectable_value(&mut self.config.refresh_mode, mode, mode.label())
+                                .selectable_value(
+                                    &mut self.config.refresh_mode,
+                                    mode,
+                                    lang.refresh_label(mode),
+                                )
                                 .changed()
                             {
                                 changed = true;
@@ -787,35 +812,53 @@ impl StockApp {
                     });
 
                 if ui
-                    .checkbox(
-                        &mut self.config.smart_market_hours,
-                        "開盤時段感知（休市自動停止輪詢）",
-                    )
+                    .checkbox(&mut self.config.smart_market_hours, lang.chk_smart_hours())
                     .changed()
                 {
                     changed = true;
                 }
                 if ui
-                    .checkbox(
-                        &mut self.config.pause_when_minimized,
-                        "視窗最小化時暫停刷新",
-                    )
+                    .checkbox(&mut self.config.pause_when_minimized, lang.chk_pause_min())
                     .changed()
                 {
                     changed = true;
                 }
                 if ui
-                    .checkbox(&mut self.config.include_us_extended, "包含美股盤前/盤後時段")
+                    .checkbox(&mut self.config.include_us_extended, lang.chk_us_ext())
                     .changed()
                 {
                     changed = true;
                 }
 
                 ui.separator();
-                ui.label(RichText::new("外觀與配色").strong());
+                ui.label(RichText::new(lang.sec_appearance()).strong());
+
+                ui.horizontal(|ui| {
+                    ui.label(lang.label_language());
+                    egui::ComboBox::from_id_salt("language_combo")
+                        .selected_text(lang.lang_setting_label(self.config.language))
+                        .show_ui(ui, |ui| {
+                            for ls in [
+                                LanguageSetting::Auto,
+                                LanguageSetting::ZhTw,
+                                LanguageSetting::En,
+                            ] {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.config.language,
+                                        ls,
+                                        lang.lang_setting_label(ls),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
+                            }
+                        });
+                });
 
                 egui::ComboBox::from_id_salt("color_scheme_combo")
-                    .selected_text(self.config.color_scheme.label())
+                    .selected_text(lang.color_scheme_label(self.config.color_scheme))
                     .show_ui(ui, |ui| {
                         for cs in [
                             ColorScheme::TwRedUp,
@@ -823,7 +866,11 @@ impl StockApp {
                             ColorScheme::AutoByMarket,
                         ] {
                             if ui
-                                .selectable_value(&mut self.config.color_scheme, cs, cs.label())
+                                .selectable_value(
+                                    &mut self.config.color_scheme,
+                                    cs,
+                                    lang.color_scheme_label(cs),
+                                )
                                 .changed()
                             {
                                 changed = true;
@@ -834,7 +881,7 @@ impl StockApp {
                 if ui
                     .add(
                         egui::Slider::new(&mut self.config.opacity, 0.25..=1.0)
-                            .text("視窗透明度")
+                            .text(lang.slider_opacity())
                             .fixed_decimals(2),
                     )
                     .changed()
@@ -842,12 +889,12 @@ impl StockApp {
                     changed = true;
                 }
 
-                if ui.checkbox(&mut self.config.dark_mode, "深色主題").changed() {
+                if ui.checkbox(&mut self.config.dark_mode, lang.chk_dark()).changed() {
                     changed = true;
                 }
 
                 if ui
-                    .checkbox(&mut self.config.always_on_top, "視窗置頂 (Always on Top)")
+                    .checkbox(&mut self.config.always_on_top, lang.chk_always_on_top())
                     .changed()
                 {
                     changed = true;
@@ -857,7 +904,7 @@ impl StockApp {
                 ui.separator();
                 let path = AppConfig::config_path();
                 ui.label(
-                    RichText::new(format!("設定檔：{}", path.display()))
+                    RichText::new(format!("{}{}", lang.config_file_label(), path.display()))
                         .weak()
                         .size(10.5),
                 );
@@ -876,6 +923,7 @@ impl StockApp {
         if self.config.view_mode == ViewMode::FloatingWidget {
             return;
         }
+        let lang = self.lang();
         ui.horizontal(|ui| {
             if let Some(err) = &self.error_text {
                 ui.label(
@@ -884,12 +932,18 @@ impl StockApp {
                         .size(10.5),
                 );
             } else {
-                ui.label(RichText::new(&self.status_text).weak().size(10.5));
+                let status_str = match self.worker_status {
+                    WorkerStatus::Initializing => lang.status_init(),
+                    WorkerStatus::Updating => lang.status_updating(),
+                    WorkerStatus::Updated => lang.status_updated(),
+                    WorkerStatus::IdleClosed => lang.status_idle_closed(),
+                };
+                ui.label(RichText::new(status_str).weak().size(10.5));
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
-                    RichText::new(self.config.refresh_mode.label())
+                    RichText::new(lang.refresh_label(self.config.refresh_mode))
                         .weak()
                         .size(10.5),
                 );
@@ -900,7 +954,6 @@ impl StockApp {
 
 impl eframe::App for StockApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Transparent clear color so FloatingWidget rounded corners & opacity work cleanly
         Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
 
@@ -910,7 +963,6 @@ impl eframe::App for StockApp {
             self.apply_viewport_for_mode(ctx, false);
         }
 
-        // Detect minimized state changes for power-saving pause
         let is_minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         if is_minimized != self.last_minimized {
             self.last_minimized = is_minimized;

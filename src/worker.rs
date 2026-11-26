@@ -13,9 +13,17 @@ pub enum WorkerCommand {
     Shutdown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerStatus {
+    Initializing,
+    Updating,
+    Updated,
+    IdleClosed,
+}
+
 pub enum WorkerEvent {
     QuotesUpdated(HashMap<String, QuoteData>),
-    Status(String),
+    Status(WorkerStatus),
     Error(String),
 }
 
@@ -67,7 +75,7 @@ impl QuoteWorker {
                         .collect();
 
                     if tw_items.is_empty() && us_items.is_empty() {
-                        let _ = evt_tx.send(WorkerEvent::Status("休市待機中 (省電暫停)".to_string()));
+                        let _ = evt_tx.send(WorkerEvent::Status(WorkerStatus::IdleClosed));
                         egui_ctx.request_repaint();
                     } else {
                         let mut merged = HashMap::new();
@@ -97,7 +105,7 @@ impl QuoteWorker {
                         if !errors.is_empty() {
                             let _ = evt_tx.send(WorkerEvent::Error(errors.join(" | ")));
                         } else {
-                            let _ = evt_tx.send(WorkerEvent::Status("已更新".to_string()));
+                            let _ = evt_tx.send(WorkerEvent::Status(WorkerStatus::Updated));
                         }
                         egui_ctx.request_repaint();
                     }

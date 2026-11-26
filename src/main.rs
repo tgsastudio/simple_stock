@@ -3,6 +3,8 @@
 mod app;
 mod config;
 mod fonts;
+mod i18n;
+mod icon;
 mod market_hours;
 mod quote;
 mod worker;
@@ -18,6 +20,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("simple_stock")
+            .with_icon(icon::build_window_icon())
             .with_inner_size([w, h])
             .with_min_inner_size([220.0, 200.0])
             .with_decorations(decorations)
