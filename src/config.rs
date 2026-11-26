@@ -88,8 +88,8 @@ impl RefreshMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViewMode {
+    #[serde(alias = "Sidebar")]
     Standard,
-    Sidebar,
     FloatingWidget,
 }
 
@@ -97,7 +97,6 @@ impl ViewMode {
     pub fn default_size(self) -> [f32; 2] {
         match self {
             ViewMode::Standard => [480.0, 560.0],
-            ViewMode::Sidebar => [300.0, 520.0],
             ViewMode::FloatingWidget => [320.0, 380.0],
         }
     }
@@ -142,11 +141,16 @@ pub struct WindowRect {
     pub height: f32,
 }
 
+/// 介面語言設定（支援跟隨作業系統與六種語系）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LanguageSetting {
     Auto,
     ZhTw,
+    ZhCn,
     En,
+    Ja,
+    Ko,
+    Es,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,7 +244,6 @@ impl AppConfig {
     pub fn window_rect_for(&self, mode: ViewMode) -> Option<WindowRect> {
         match mode {
             ViewMode::Standard => self.window_standard,
-            ViewMode::Sidebar => self.window_sidebar,
             ViewMode::FloatingWidget => self.window_floating,
         }
     }
@@ -248,7 +251,6 @@ impl AppConfig {
     pub fn set_window_rect_for(&mut self, mode: ViewMode, rect: WindowRect) {
         match mode {
             ViewMode::Standard => self.window_standard = Some(rect),
-            ViewMode::Sidebar => self.window_sidebar = Some(rect),
             ViewMode::FloatingWidget => self.window_floating = Some(rect),
         }
     }

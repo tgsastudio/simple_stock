@@ -533,7 +533,7 @@ pub fn open_edit_position_dialog(
         dpi,
         dark,
         "BUTTON",
-        if lang.is_zh() { "取消" } else { "Cancel" },
+        lang.btn_cancel(),
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         246,
         122,
@@ -635,7 +635,7 @@ unsafe extern "system" fn add_stock_wndproc(
                                 hwnd,
                                 ID_ADD_STATUS,
                                 if st.results.is_empty() {
-                                    if st.lang.is_zh() { "查無符合結果" } else { "No results" }
+                                    st.lang.search_no_results()
                                 } else {
                                     st.lang.search_results_header()
                                 },
@@ -867,7 +867,7 @@ pub fn open_add_stock_dialog(parent: HWND, cfg: &AppConfig) -> Vec<StockItem> {
         dpi,
         dark,
         "STATIC",
-        if lang.is_zh() { "名稱 (選填)：" } else { "Name (opt):" },
+        lang.label_name_short(),
         SS_NOPREFIX,
         18,
         112,
@@ -924,12 +924,7 @@ pub fn open_add_stock_dialog(parent: HWND, cfg: &AppConfig) -> Vec<StockItem> {
     );
 
     // 線上搜尋結果列表（加大高度，雙擊直接加入）
-    let hint_list = if lang.is_zh() {
-        "線上搜尋結果（單擊帶入、雙擊直接加入）："
-    } else {
-        "Search results (click to fill, double-click to add):"
-    };
-    create_ctrl(dlg, dpi, dark, "STATIC", hint_list, SS_NOPREFIX, 18, 182, 406, 20, ID_ADD_STATUS, small_font);
+    create_ctrl(dlg, dpi, dark, "STATIC", lang.search_results_header(), SS_NOPREFIX, 18, 182, 406, 20, ID_ADD_STATUS, small_font);
     create_ctrl(
         dlg,
         dpi,
@@ -965,7 +960,7 @@ pub fn open_add_stock_dialog(parent: HWND, cfg: &AppConfig) -> Vec<StockItem> {
         dpi,
         dark,
         "BUTTON",
-        if lang.is_zh() { "關閉" } else { "Close" },
+        lang.btn_close(),
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         340,
         330,
@@ -1114,7 +1109,11 @@ unsafe extern "system" fn settings_wndproc(
                     unsafe { SendMessageW(GetDlgItem(hwnd, ID_SET_LANG), CB_GETCURSEL, 0, 0) };
                 st.cfg.language = match l_idx {
                     1 => LanguageSetting::ZhTw,
-                    2 => LanguageSetting::En,
+                    2 => LanguageSetting::ZhCn,
+                    3 => LanguageSetting::En,
+                    4 => LanguageSetting::Ja,
+                    5 => LanguageSetting::Ko,
+                    6 => LanguageSetting::Es,
                     _ => LanguageSetting::Auto,
                 };
 
@@ -1286,11 +1285,19 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         178,
         137,
         248,
-        120,
+        200,
         ID_SET_LANG,
         font,
     );
-    for ls in [LanguageSetting::Auto, LanguageSetting::ZhTw, LanguageSetting::En] {
+    for ls in [
+        LanguageSetting::Auto,
+        LanguageSetting::ZhTw,
+        LanguageSetting::ZhCn,
+        LanguageSetting::En,
+        LanguageSetting::Ja,
+        LanguageSetting::Ko,
+        LanguageSetting::Es,
+    ] {
         let w = to_wide(lang.lang_setting_label(ls));
         unsafe {
             SendMessageW(cb_lang, CB_ADDSTRING, 0, w.as_ptr() as isize);
@@ -1299,7 +1306,11 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
     let cur_lang = match cfg.language {
         LanguageSetting::Auto => 0,
         LanguageSetting::ZhTw => 1,
-        LanguageSetting::En => 2,
+        LanguageSetting::ZhCn => 2,
+        LanguageSetting::En => 3,
+        LanguageSetting::Ja => 4,
+        LanguageSetting::Ko => 5,
+        LanguageSetting::Es => 6,
     };
     unsafe {
         SendMessageW(cb_lang, CB_SETCURSEL, cur_lang, 0);
@@ -1310,7 +1321,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         dpi,
         dark,
         "STATIC",
-        if lang.is_zh() { "漲跌配色" } else { "Color Scheme" },
+        lang.label_color_scheme(),
         SS_NOPREFIX,
         18,
         174,
@@ -1502,7 +1513,7 @@ pub fn open_settings_dialog(parent: HWND, cfg: &AppConfig) -> Option<AppConfig> 
         dpi,
         dark,
         "BUTTON",
-        if lang.is_zh() { "取消" } else { "Cancel" },
+        lang.btn_cancel(),
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         342,
         412,

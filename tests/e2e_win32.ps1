@@ -7,6 +7,8 @@ Add-Type -MemberDefinition '
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string lpClassName, string lpWindowName);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+[DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
 [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
 [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -89,12 +91,11 @@ function GetTopBarCoords([IntPtr]$main) {
         $pinX = $rx - (& $sc 13); $rx -= (& $sc 26) + (& $sc 4)
     }
     $floatX = $rx - (& $sc 17); $rx -= (& $sc 34) + (& $sc 4)
-    $sideX  = $rx - (& $sc 17); $rx -= (& $sc 34) + (& $sc 4)
     $stdX   = $rx - (& $sc 17)
 
     return @{
         W=$w; H=($rc.Bottom - $rc.Top); DPI=$dpi; Floating=$isFloating; TopY=$topY;
-        SetX=$setX; AddX=$addX; RefX=$refX; PinX=$pinX; FloatX=$floatX; SideX=$sideX; StdX=$stdX
+        SetX=$setX; AddX=$addX; RefX=$refX; PinX=$pinX; FloatX=$floatX; StdX=$stdX
     }
 }
 
@@ -118,13 +119,8 @@ try {
     $c = GetTopBarCoords $main
     Write-Host "[PASS] 1. Fresh launch visible (Standard=$($c.Floating -eq $false), Size=$($c.W)x$($c.H), DPI=$($c.DPI))"
 
-    # 2. 切換三種視窗模式（標準 -> 側邊 -> 浮動 -> 標準）
-    ClickAt $main $c.SideX $c.TopY
-    Start-Sleep -Milliseconds 400
-    $c2 = GetTopBarCoords $main
-    if ($c2.W -ge $c.W) { throw "FAIL: Sidebar mode did not shrink width! ($($c2.W) vs $($c.W))" }
-
-    ClickAt $main $c2.FloatX $c2.TopY
+    # 2. 切換兩種視窗模式（標準 -> 浮動 -> 標準）
+    ClickAt $main $c.FloatX $c.TopY
     Start-Sleep -Milliseconds 400
     $c3 = GetTopBarCoords $main
     if (-not $c3.Floating) { throw "FAIL: Floating mode did not remove WS_CAPTION!" }
@@ -133,7 +129,7 @@ try {
     Start-Sleep -Milliseconds 400
     $c = GetTopBarCoords $main
     if ($c.Floating) { throw "FAIL: Standard mode did not restore WS_CAPTION!" }
-    Write-Host "[PASS] 2. All 3 view modes switched cleanly (Std -> Sidebar -> Floating -> Std)"
+    Write-Host "[PASS] 2. Both view modes switched cleanly (Std -> Floating -> Std)"
 
     # 3. 置頂切換驗證（WS_EX_TOPMOST = 0x00000008）
     $beforeTop = (([E2EFull.U32]::GetWindowLongW($main, -20)) -band 0x8) -ne 0
@@ -239,13 +235,28 @@ try {
     if (-not $headerOk -or $textLossy.Contains("2454")) { throw "FAIL: config.dat encryption check failed!" }
     Write-Host "[PASS] 9. DPAPI encryption verified (no plaintext leak) & Memory: Private=${privMb} MB, WS=${wsMb} MB"
 
-    # 10. 重啟驗證狀態延續
+    # 10. 重啟驗證視窗位置與狀態延續
     $proc = Start-Process $exe -PassThru
     $main2 = Wait-Window "StockTW_MainWindow_v2" 5000
     if ($main2 -eq [IntPtr]::Zero) { throw "FAIL: Relaunch failed!" }
+    Start-Sleep -Milliseconds 300
+    [void][E2EFull.U32]::MoveWindow($main2, 260, 180, 960, 1120, $true)
+    Start-Sleep -Milliseconds 300
     [void][E2EFull.U32]::PostMessageW($main2, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
     if (-not $proc.WaitForExit(4000)) { throw "FAIL: Second exit failed!" }
-    Write-Host "[PASS] 10. Restart & state persistence verified (ExitCode=$($proc.ExitCode))"
+
+    $proc = Start-Process $exe -PassThru
+    $main3 = Wait-Window "StockTW_MainWindow_v2" 5000
+    if ($main3 -eq [IntPtr]::Zero) { throw "FAIL: Third launch failed!" }
+    Start-Sleep -Milliseconds 300
+    $r3 = New-Object E2EFull.U32+RECT
+    [void][E2EFull.U32]::GetWindowRect($main3, [ref]$r3)
+    if ([Math]::Abs($r3.Left - 260) -gt 4 -or [Math]::Abs($r3.Top - 180) -gt 4) {
+        throw "FAIL: Window position not restored! Expected ~(260,180), got ($($r3.Left),$($r3.Top))"
+    }
+    [void][E2EFull.U32]::PostMessageW($main3, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+    if (-not $proc.WaitForExit(4000)) { throw "FAIL: Third exit failed!" }
+    Write-Host "[PASS] 10. Restart & window position persistence verified (($($r3.Left),$($r3.Top)), ExitCode=$($proc.ExitCode))"
 
     Write-Host "`n=== ALL 10 FULL-FEATURE E2E TESTS PASSED! ==="
 }

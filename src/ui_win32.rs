@@ -48,6 +48,22 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_EXITSIZEMOVE: u32 = 0x0232;
+
+/// 將已儲存的視窗座標套用虛擬螢幕邊界保護（容許 Windows DWM 隱形邊框負座標）
+fn resolve_window_pos(saved: &WindowRect) -> (i32, i32) {
+    let (vx, vy, vw, vh) = virtual_screen_bounds();
+    let px = saved.x.round() as i32;
+    let py = saved.y.round() as i32;
+    let in_bounds = px >= vx - 60 && px <= vx + vw - 80 && py >= vy - 40 && py <= vy + vh - 60;
+    if in_bounds {
+        (px, py)
+    } else {
+        let max_x = (vx + vw - 160).max(vx);
+        let max_y = (vy + vh - 120).max(vy);
+        (px.clamp(vx, max_x), py.clamp(vy, max_y))
+    }
+}
 
 // 右鍵選單指令 ID
 const CMD_CTX_EDIT: u32 = 1001;
@@ -200,17 +216,8 @@ impl AppState {
             };
 
             if resize_to_mode {
-                let (vx, vy, vw, vh) = virtual_screen_bounds();
                 let (lw, lh, pos) = if let Some(saved) = self.config.window_rect_for(mode) {
-                    let in_bounds = saved.x >= vx as f32
-                        && saved.x <= (vx + vw - 120) as f32
-                        && saved.y >= vy as f32
-                        && saved.y <= (vy + vh - 120) as f32;
-                    let safe_p = if in_bounds {
-                        Some((saved.x.round() as i32, saved.y.round() as i32))
-                    } else {
-                        Some((vx + 120, vy + 120))
-                    };
+                    let safe_p = Some(resolve_window_pos(&saved));
                     (saved.width.clamp(220.0, 1400.0), saved.height.clamp(200.0, 1200.0), safe_p)
                 } else {
                     let [dw, dh] = mode.default_size();
@@ -251,7 +258,12 @@ impl AppState {
                 );
             }
 
-            let alpha = (self.config.opacity.clamp(0.25, 1.0) * 255.0).round() as u8;
+            // 僅在浮動模式套用視窗透明度；標準模式維持 100% 完全不透明
+            let alpha = if mode == ViewMode::FloatingWidget {
+                (self.config.opacity.clamp(0.25, 1.0) * 255.0).round() as u8
+            } else {
+                255
+            };
             SetLayeredWindowAttributes(self.hwnd, 0, alpha, LWA_ALPHA);
             apply_dark_title_bar(self.hwnd, self.config.dark_mode);
             self.update_floating_region();
@@ -290,10 +302,10 @@ impl AppState {
                 let y = out_r.top;
                 if w >= 200.0
                     && h >= 180.0
-                    && x >= vx - 50
-                    && x <= vx + vw - 100
-                    && y >= vy - 50
-                    && y <= vy + vh - 100
+                    && x >= vx - 60
+                    && x <= vx + vw - 80
+                    && y >= vy - 40
+                    && y <= vy + vh - 60
                 {
                     self.config.set_window_rect_for(
                         self.config.view_mode,
@@ -568,17 +580,18 @@ impl AppState {
             let gap4 = self.sc(4);
             let small_font = self.fonts.small;
 
-            let mut push_btn = |text: &str,
-                                btn_w: i32,
-                                active: bool,
-                                fg: u32,
-                                target: HitTarget,
-                                hits: &mut Vec<HitRect>| {
-                let bx = rx - btn_w;
+            let push_btn = |rx: &mut i32,
+                            text: &str,
+                            btn_w: i32,
+                            active: bool,
+                            fg: u32,
+                            target: HitTarget,
+                            hits: &mut Vec<HitRect>| {
+                let bx = *rx - btn_w;
                 let r = RECT {
                     left: bx,
                     top: y,
-                    right: rx,
+                    right: *rx,
                     bottom: y + top_h,
                 };
                 let is_hov = hover_target == Some(target);
@@ -589,7 +602,13 @@ impl AppState {
                 } else {
                     pill_idle
                 };
-                draw_round_box(mem_dc, &r, fill, if active || is_hov { card_border } else { fill }, rad5);
+                draw_round_box(
+                    mem_dc,
+                    &r,
+                    fill,
+                    if active || is_hov { card_border } else { fill },
+                    rad5,
+                );
                 draw_text(
                     mem_dc,
                     text,
@@ -599,7 +618,38 @@ impl AppState {
                     DT_SINGLELINE | DT_VCENTER | DT_CENTER,
                 );
                 hits.push(HitRect { rect: r, target });
-                rx = bx - gap4;
+                *rx = bx - gap4;
+            };
+
+            let push_btn_styled = |rx: &mut i32,
+                                   text: &str,
+                                   btn_w: i32,
+                                   fill_idle: u32,
+                                   fill_hov: u32,
+                                   border: u32,
+                                   fg: u32,
+                                   target: HitTarget,
+                                   hits: &mut Vec<HitRect>| {
+                let bx = *rx - btn_w;
+                let r = RECT {
+                    left: bx,
+                    top: y,
+                    right: *rx,
+                    bottom: y + top_h,
+                };
+                let is_hov = hover_target == Some(target);
+                let fill = if is_hov { fill_hov } else { fill_idle };
+                draw_round_box(mem_dc, &r, fill, border, rad5);
+                draw_text(
+                    mem_dc,
+                    text,
+                    &r,
+                    small_font,
+                    fg,
+                    DT_SINGLELINE | DT_VCENTER | DT_CENTER,
+                );
+                hits.push(HitRect { rect: r, target });
+                *rx = bx - gap4;
             };
 
             let w22 = self.sc(22);
@@ -619,48 +669,65 @@ impl AppState {
             });
 
             if mode == ViewMode::FloatingWidget {
-                push_btn("✕", w22, false, text_muted, HitTarget::CloseApp, &mut self.hits);
+                push_btn(&mut rx, "✕", w22, false, text_muted, HitTarget::CloseApp, &mut self.hits);
             }
             push_btn(
-                if lang.is_zh() { "設定" } else { "Set" },
+                &mut rx,
+                lang.btn_top_settings(),
                 self.sc(32),
                 false,
                 text_muted,
                 HitTarget::Settings,
                 &mut self.hits,
             );
-            push_btn("＋", w22, false, text_primary, HitTarget::AddStock, &mut self.hits);
+            push_btn(&mut rx, "＋", w22, false, text_primary, HitTarget::AddStock, &mut self.hits);
             if !is_compact {
-                push_btn(
-                    if lang.is_zh() { "刷" } else { "R" },
+                // 「刷」按鈕：獨立青藍色系（Teal/Cyan）方便辨識
+                let (ref_bg, ref_hov, ref_bd, ref_fg) = if dark {
+                    (rgb(20, 62, 74), rgb(28, 84, 98), rgb(44, 124, 144), rgb(104, 226, 242))
+                } else {
+                    (rgb(212, 244, 248), rgb(186, 236, 244), rgb(110, 198, 212), rgb(12, 112, 138))
+                };
+                push_btn_styled(
+                    &mut rx,
+                    lang.btn_top_refresh(),
                     w22,
-                    false,
-                    text_muted,
+                    ref_bg,
+                    ref_hov,
+                    ref_bd,
+                    ref_fg,
                     HitTarget::Refresh,
                     &mut self.hits,
                 );
-                push_btn(
-                    if lang.is_zh() { "頂" } else { "Pin" },
+
+                // 「頂」按鈕：獨立琥珀金黃色系（Amber/Gold），開啟置頂時更加醒目
+                let (pin_bg, pin_hov, pin_bd, pin_fg) = match (dark, self.config.always_on_top) {
+                    (true, true) => (rgb(132, 88, 18), rgb(156, 106, 24), rgb(235, 178, 52), rgb(255, 240, 180)),
+                    (true, false) => (rgb(58, 44, 22), rgb(78, 58, 26), rgb(122, 92, 38), rgb(235, 188, 88)),
+                    (false, true) => (rgb(254, 226, 146), rgb(252, 214, 118), rgb(217, 152, 24), rgb(138, 78, 8)),
+                    (false, false) => (rgb(254, 245, 220), rgb(252, 236, 194), rgb(224, 190, 110), rgb(162, 104, 18)),
+                };
+                push_btn_styled(
+                    &mut rx,
+                    lang.btn_top_pin(),
                     w26,
-                    self.config.always_on_top,
-                    if self.config.always_on_top {
-                        rgb(250, 195, 70)
-                    } else {
-                        text_muted
-                    },
+                    pin_bg,
+                    pin_hov,
+                    pin_bd,
+                    pin_fg,
                     HitTarget::TogglePin,
                     &mut self.hits,
                 );
             }
 
-            // 模式切換膠囊（標準 / 側邊 / 浮動）
-            for m in [ViewMode::FloatingWidget, ViewMode::Sidebar, ViewMode::Standard] {
+            // 模式切換膠囊（標準 / 浮動）
+            for m in [ViewMode::FloatingWidget, ViewMode::Standard] {
                 let lbl = match m {
                     ViewMode::Standard => lang.mode_standard(),
-                    ViewMode::Sidebar => lang.mode_sidebar(),
                     ViewMode::FloatingWidget => lang.mode_floating(),
                 };
                 push_btn(
+                    &mut rx,
                     lbl,
                     w34,
                     mode == m,
@@ -1469,6 +1536,11 @@ unsafe extern "system" fn main_wndproc(
             st.capture_geometry();
             0
         }
+        WM_EXITSIZEMOVE => {
+            st.capture_geometry();
+            st.config.save();
+            0
+        }
         WM_MOUSEWHEEL => {
             let delta = ((wparam >> 16) as i16) as i32;
             st.scroll_y = (st.scroll_y - delta / 3).clamp(0, st.max_scroll);
@@ -1591,7 +1663,7 @@ unsafe extern "system" fn main_wndproc(
                     }
                 }
                 Some(HitTarget::CloseApp) => unsafe {
-                    DestroyWindow(hwnd);
+                    SendMessageW(hwnd, WM_CLOSE, 0, 0);
                 },
                 Some(HitTarget::Filter(f)) => {
                     st.config.market_filter = f;
@@ -1700,17 +1772,9 @@ pub fn run_win32_app() {
             WS_OVERLAPPEDWINDOW
         };
 
-        let (vx, vy, vw, vh) = virtual_screen_bounds();
+        let (vx, vy, _, _) = virtual_screen_bounds();
         let (x, y) = if let Some(saved) = initial_cfg.window_rect_for(initial_cfg.view_mode) {
-            let in_bounds = saved.x >= vx as f32
-                && saved.x <= (vx + vw - 120) as f32
-                && saved.y >= vy as f32
-                && saved.y <= (vy + vh - 120) as f32;
-            if in_bounds {
-                (saved.x.round() as i32, saved.y.round() as i32)
-            } else {
-                (vx + 120, vy + 120)
-            }
+            resolve_window_pos(&saved)
         } else {
             (vx + 120, vy + 120)
         };
