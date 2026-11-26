@@ -1,0 +1,8 @@
+/target
+Cargo.lock
+*.exe
+*.msi
+*.pdb
+.DS_Store
+Thumbs.db
+config.json

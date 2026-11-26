@@ -1,0 +1,13 @@
+[package]
+name = "simple_stock"
+version = "0.1.0"
+edition = "2024"
+description = "Lightweight Windows real-time stock dashboard for Taiwan and US markets"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
