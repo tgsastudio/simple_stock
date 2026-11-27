@@ -9,7 +9,7 @@
     Name="__PACKAGE_IDENTITY_NAME__"
     Publisher="__PUBLISHER_CN__"
     Version="__APP_VERSION__.0"
-    ProcessorArchitecture="x64" />
+    ProcessorArchitecture="__ARCH__" />
 
   <Properties>
     <DisplayName>__APP_DISPLAY_NAME__</DisplayName>

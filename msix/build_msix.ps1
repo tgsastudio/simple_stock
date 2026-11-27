@@ -17,6 +17,11 @@ param(
 
     [string]$DisplayName = "Stock TW",
 
+    [ValidateSet("x64", "arm64")]
+    [string]$Arch = "x64",
+
+    [string]$Target = "",
+
     [string]$Version = ""
 )
 
@@ -32,7 +37,11 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     }
 }
 
-$exePath = Join-Path $repoRoot "target\release\simple_stock.exe"
+$exePath = if ([string]::IsNullOrWhiteSpace($Target)) {
+    Join-Path $repoRoot "target\release\simple_stock.exe"
+} else {
+    Join-Path $repoRoot "target\$Target\release\simple_stock.exe"
+}
 if (-not (Test-Path $exePath)) {
     throw "Release binary not found at $exePath. Run 'cargo build --release' first."
 }
@@ -61,11 +70,12 @@ $manifest = $manifest.Replace("__PUBLISHER_CN__", $Publisher)
 $manifest = $manifest.Replace("__PUBLISHER_DISPLAY_NAME__", $PublisherDisplayName)
 $manifest = $manifest.Replace("__APP_DISPLAY_NAME__", $DisplayName)
 $manifest = $manifest.Replace("__APP_VERSION__", $Version)
+$manifest = $manifest.Replace("__ARCH__", $Arch)
 [System.IO.File]::WriteAllText((Join-Path $stageDir "AppxManifest.xml"), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
 $distDir = Join-Path $repoRoot "dist"
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
-$outMsix = Join-Path $distDir "StockTW-x64-v$Version.msix"
+$outMsix = Join-Path $distDir "StockTW-$Arch-v$Version.msix"
 
 & $makeappx pack /d $stageDir /p $outMsix /o
 if ($LASTEXITCODE -ne 0) {
