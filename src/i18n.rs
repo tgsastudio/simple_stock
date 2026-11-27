@@ -433,6 +433,16 @@ impl Lang {
             Lang::Es => "Tema oscuro",
         }
     }
+    pub fn label_loss_alert(self) -> &'static str {
+        match self {
+            Lang::ZhTw => "虧損警示門檻",
+            Lang::ZhCn => "亏损警示阈值",
+            Lang::En => "Loss Alert (%)",
+            Lang::Ja => "損失警告閾値",
+            Lang::Ko => "손실 경고 기준",
+            Lang::Es => "Alerta pérdida (%)",
+        }
+    }
     pub fn chk_always_on_top(self) -> &'static str {
         match self {
             Lang::ZhTw => "視窗置頂 (Always on Top)",

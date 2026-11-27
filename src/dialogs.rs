@@ -1015,6 +1015,7 @@ const ID_SET_DOWNLOAD: i32 = 312;
 const ID_SET_SAVE: i32 = 313;
 const ID_SET_CANCEL: i32 = 314;
 const ID_SET_AUTOSTART: i32 = 315;
+const ID_SET_LOSS_ALERT: i32 = 316;
 const ID_SET_TAB_GENERAL: i32 = 320;
 const ID_SET_TAB_APPEARANCE: i32 = 321;
 const ID_SET_TAB_REFRESH: i32 = 322;
@@ -1305,6 +1306,13 @@ unsafe extern "system" fn settings_wndproc(
 
                 st.cfg.dark_mode = is_checked(hwnd, ID_SET_DARK);
                 st.cfg.always_on_top = is_checked(hwnd, ID_SET_TOP);
+                if let Ok(v) = get_ctrl_text(hwnd, ID_SET_LOSS_ALERT)
+                    .trim()
+                    .replace('%', "")
+                    .parse::<f64>()
+                {
+                    st.cfg.loss_alert_pct = v.abs().min(100.0);
+                }
 
                 // 啟用時一律重寫（修正失效路徑）；停用時僅在原本已啟用才移除
                 if st.autostart_supported {
@@ -1617,11 +1625,62 @@ pub fn open_settings_dialog(parent: HWND, cfg: &mut AppConfig) -> Option<AppConf
         dlg,
         dpi,
         dark,
+        "STATIC",
+        lang.label_loss_alert(),
+        SS_NOPREFIX,
+        18,
+        133,
+        150,
+        22,
+        0,
+        font,
+    ));
+    let loss_init = if (cfg.loss_alert_pct - cfg.loss_alert_pct.round()).abs() < 1e-6 {
+        format!("{}", cfg.loss_alert_pct.round() as i32)
+    } else {
+        format!("{:.2}", cfg.loss_alert_pct)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    };
+    tab_ctrls[1].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "EDIT",
+        &loss_init,
+        WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+        178,
+        130,
+        68,
+        24,
+        ID_SET_LOSS_ALERT,
+        font,
+    ));
+    tab_ctrls[1].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
+        "STATIC",
+        "%  (0 = Off)",
+        SS_NOPREFIX,
+        252,
+        133,
+        110,
+        22,
+        0,
+        small_font,
+    ));
+
+    tab_ctrls[1].push(create_ctrl(
+        dlg,
+        dpi,
+        dark,
         "BUTTON",
         lang.chk_dark(),
         BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
         18,
-        134,
+        164,
         408,
         24,
         ID_SET_DARK,

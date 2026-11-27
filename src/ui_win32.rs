@@ -1219,11 +1219,46 @@ impl AppState {
 
                                 let row3_top = div_y + self.sc(3);
                                 let row3_bot = card_r.bottom - self.sc(4);
+                                let is_loss_alert =
+                                    self.config.loss_alert_pct > 0.0 && pct <= -self.config.loss_alert_pct;
+                                let pnl_txt = if is_loss_alert {
+                                    format!(
+                                        "⚠ {} {p_sign}{} ({p_sign}{pct:.2}%)",
+                                        lang.label_pnl(),
+                                        format_number(profit, dec)
+                                    )
+                                } else {
+                                    format!(
+                                        "{} {p_sign}{} ({p_sign}{pct:.2}%)",
+                                        lang.label_pnl(),
+                                        format_number(profit, dec)
+                                    )
+                                };
+                                let pnl_max_left = if is_compact {
+                                    lx
+                                } else {
+                                    right_left - self.sc(42)
+                                };
+                                let alert_pill_r = if is_loss_alert {
+                                    let tw = measure_text_width(mem_dc, &pnl_txt, self.fonts.small_bold);
+                                    let pill_left = (right_pad - tw - self.sc(12)).max(pnl_max_left);
+                                    Some(RECT {
+                                        left: pill_left,
+                                        top: row3_top + self.sc(1),
+                                        right: right_pad,
+                                        bottom: row3_bot - self.sc(1),
+                                    })
+                                } else {
+                                    None
+                                };
                                 if !is_compact {
+                                    let hold_right = alert_pill_r
+                                        .map(|pr| (pr.left - self.sc(6)).max(lx))
+                                        .unwrap_or(right_left);
                                     let hold_r = RECT {
                                         left: lx,
                                         top: row3_top,
-                                        right: right_left,
+                                        right: hold_right,
                                         bottom: row3_bot,
                                     };
                                     let hold_txt = format!(
@@ -1236,30 +1271,60 @@ impl AppState {
                                         mem_dc,
                                         &hold_txt,
                                         &hold_r,
-                                        self.fonts.small,
+                                        self.fonts.small_bold,
                                         text_muted,
                                         DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
                                     );
                                 }
-                                let pnl_r = RECT {
-                                    left: if is_compact { lx } else { right_left - self.sc(42) },
-                                    top: row3_top,
-                                    right: right_pad,
-                                    bottom: row3_bot,
-                                };
-                                let pnl_txt = format!(
-                                    "{} {p_sign}{} ({p_sign}{pct:.2}%)",
-                                    lang.label_pnl(),
-                                    format_number(profit, dec)
-                                );
-                                draw_text(
-                                    mem_dc,
-                                    &pnl_txt,
-                                    &pnl_r,
-                                    self.fonts.small_bold,
-                                    pnl_col,
-                                    DT_SINGLELINE | DT_VCENTER | DT_RIGHT,
-                                );
+                                if let Some(pill_r) = alert_pill_r {
+                                    let loss_is_green = self.config.color_scheme.is_red_up(item.market);
+                                    let (alert_bg, alert_bd, alert_fg) = match (dark, loss_is_green) {
+                                        (true, true) => (
+                                            rgb(18, 86, 54),
+                                            rgb(52, 211, 130),
+                                            rgb(220, 255, 236),
+                                        ),
+                                        (true, false) => (
+                                            rgb(132, 34, 34),
+                                            rgb(240, 82, 82),
+                                            rgb(255, 234, 226),
+                                        ),
+                                        (false, true) => (
+                                            rgb(220, 252, 231),
+                                            rgb(22, 163, 74),
+                                            rgb(15, 110, 50),
+                                        ),
+                                        (false, false) => (
+                                            rgb(254, 226, 222),
+                                            rgb(220, 68, 55),
+                                            rgb(185, 28, 28),
+                                        ),
+                                    };
+                                    draw_round_box(mem_dc, &pill_r, alert_bg, alert_bd, self.sc(4));
+                                    draw_text(
+                                        mem_dc,
+                                        &pnl_txt,
+                                        &pill_r,
+                                        self.fonts.small_bold,
+                                        alert_fg,
+                                        DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS,
+                                    );
+                                } else {
+                                    let pnl_r = RECT {
+                                        left: pnl_max_left,
+                                        top: row3_top,
+                                        right: right_pad,
+                                        bottom: row3_bot,
+                                    };
+                                    draw_text(
+                                        mem_dc,
+                                        &pnl_txt,
+                                        &pnl_r,
+                                        self.fonts.small_bold,
+                                        pnl_col,
+                                        DT_SINGLELINE | DT_VCENTER | DT_RIGHT,
+                                    );
+                                }
                             }
                         } else {
                             let wait_r = RECT {
@@ -1498,6 +1563,29 @@ unsafe fn draw_text(hdc: HDC, text: &str, rect: &RECT, font: HFONT, color: u32, 
         let w = to_wide(text);
         DrawTextW(hdc, w.as_ptr(), (w.len() - 1) as i32, &mut r, flags | DT_NOPREFIX);
         SelectObject(hdc, old_f);
+    }
+}
+
+unsafe fn measure_text_width(hdc: HDC, text: &str, font: HFONT) -> i32 {
+    const DT_CALCRECT: u32 = 0x0000_0400;
+    unsafe {
+        let old_f = SelectObject(hdc, font as _);
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let w = to_wide(text);
+        DrawTextW(
+            hdc,
+            w.as_ptr(),
+            (w.len() - 1) as i32,
+            &mut r,
+            DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        SelectObject(hdc, old_f);
+        (r.right - r.left).max(0)
     }
 }
 
