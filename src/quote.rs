@@ -4,7 +4,7 @@
 
 use crate::config::{Market, StockItem};
 use crate::market_hours::TradingPeriod;
-use chrono::Local;
+use chrono::{Local, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -79,7 +79,8 @@ fn now_hms() -> String {
     Local::now().format("%H:%M:%S").to_string()
 }
 
-/// Fetch Taiwan stock quotes in a single batch from TWSE/TPEx MIS public API.
+/// Fetch Taiwan stock quotes in a single batch from Cnyes real-time API,
+/// falling back to TWSE/TPEx MIS and Yahoo Finance for any missing symbols.
 pub fn fetch_tw_batch(
     agent: &ureq::Agent,
     items: &[&StockItem],
@@ -89,58 +90,181 @@ pub fn fetch_tw_batch(
         return Ok(result);
     }
 
-    let mut channels = Vec::with_capacity(items.len() * 2);
-    for item in items {
+    // 1. Primary: Cnyes batch real-time quote API (supports both TWSE & TPEx in real time)
+    if let Ok(cnyes_map) = fetch_cnyes_tw_batch(agent, items) {
+        result.extend(cnyes_map);
+    }
+
+    let missing: Vec<&StockItem> = items
+        .iter()
+        .copied()
+        .filter(|i| !result.contains_key(&i.key()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(result);
+    }
+
+    // 2. Fallback: TWSE/TPEx MIS public API for any missing symbols
+    let mut channels = Vec::with_capacity(missing.len() * 2);
+    for item in &missing {
         let code = item.symbol.trim().to_uppercase();
         channels.push(format!("tse_{code}.tw"));
         channels.push(format!("otc_{code}.tw"));
     }
+    let ts = Utc::now().timestamp_millis();
     let url = format!(
-        "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={}&json=1&delay=0",
+        "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={}&json=1&delay=0&_={ts}",
         channels.join("|")
+    );
+
+    if let Ok(resp) = agent
+        .get(&url)
+        .set("Referer", "https://mis.twse.com.tw/")
+        .set("Cache-Control", "no-cache")
+        .call()
+    {
+        if let Ok(body) = resp.into_json::<Value>() {
+            let updated_at = now_hms();
+            if let Some(arr) = body.get("msgArray").and_then(|v| v.as_array()) {
+                for entry in arr {
+                    let code = match entry.get("c").and_then(|v| v.as_str()) {
+                        Some(c) if !c.is_empty() => c.to_uppercase(),
+                        _ => continue,
+                    };
+                    let prev_close = match parse_f64_opt(entry.get("y")) {
+                        Some(y) if y > 0.0 => y,
+                        _ => continue,
+                    };
+                    let price = parse_f64_opt(entry.get("z"))
+                        .filter(|&p| p > 0.0)
+                        .or_else(|| parse_first_book_price(entry.get("b")))
+                        .or_else(|| parse_first_book_price(entry.get("a")))
+                        .unwrap_or(prev_close);
+
+                    let name = entry
+                        .get("n")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&code)
+                        .to_string();
+
+                    let open = parse_f64_opt(entry.get("o")).filter(|&v| v > 0.0);
+                    let high = parse_f64_opt(entry.get("h")).filter(|&v| v > 0.0);
+                    let low = parse_f64_opt(entry.get("l")).filter(|&v| v > 0.0);
+                    let volume = entry
+                        .get("v")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<u64>().ok());
+
+                    let change = price - prev_close;
+                    let change_percent = if prev_close > 0.0 {
+                        (change / prev_close) * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    let key = format!("{:?}:{}", Market::Tw, code);
+                    result.insert(
+                        key,
+                        QuoteData {
+                            symbol: code,
+                            display_name: name,
+                            market: Market::Tw,
+                            price,
+                            prev_close,
+                            change,
+                            change_percent,
+                            open,
+                            high,
+                            low,
+                            volume,
+                            updated_at: updated_at.clone(),
+                            source: "TWSE",
+                            trading_period: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // 3. Fallback: Yahoo Finance for any still-missing TW symbols
+    for item in items {
+        let key = item.key();
+        if !result.contains_key(&key) {
+            let code = item.symbol.trim().to_uppercase();
+            if let Ok(q) = fetch_yahoo_single(agent, &format!("{code}.TW"), item, false)
+                .or_else(|_| fetch_yahoo_single(agent, &format!("{code}.TWO"), item, false))
+            {
+                result.insert(key, q);
+            }
+        }
+    }
+
+    if result.is_empty() && !items.is_empty() {
+        return Err("台股報價連線失敗".to_string());
+    }
+
+    Ok(result)
+}
+
+fn fetch_cnyes_tw_batch(
+    agent: &ureq::Agent,
+    items: &[&StockItem],
+) -> Result<HashMap<String, QuoteData>, String> {
+    let syms: Vec<String> = items
+        .iter()
+        .map(|i| format!("TWS:{}:STOCK", i.symbol.trim().to_uppercase()))
+        .collect();
+    let ts = Utc::now().timestamp_millis();
+    let url = format!(
+        "https://ws.api.cnyes.com/ws/api/v1/quote/quotes/{}?_={ts}",
+        syms.join(",")
     );
 
     let resp = agent
         .get(&url)
-        .set("Referer", "https://mis.twse.com.tw/")
+        .set("Cache-Control", "no-cache")
         .call()
-        .map_err(|e| format!("TWSE 連線失敗: {e}"))?;
+        .map_err(|e| format!("Cnyes 連線失敗: {e}"))?;
 
     let body: Value = resp
         .into_json()
-        .map_err(|e| format!("TWSE JSON 解析失敗: {e}"))?;
+        .map_err(|e| format!("Cnyes JSON 解析失敗: {e}"))?;
 
+    let mut result = HashMap::new();
     let updated_at = now_hms();
-    if let Some(arr) = body.get("msgArray").and_then(|v| v.as_array()) {
+    if let Some(arr) = body.get("data").and_then(|v| v.as_array()) {
         for entry in arr {
-            let code = match entry.get("c").and_then(|v| v.as_str()) {
-                Some(c) if !c.is_empty() => c.to_uppercase(),
-                _ => continue,
+            let raw_sym = match entry.get("0").and_then(|v| v.as_str()) {
+                Some(s) => s,
+                None => continue,
             };
-            let prev_close = match parse_f64_opt(entry.get("y")) {
-                Some(y) if y > 0.0 => y,
-                _ => continue,
+            let code = raw_sym
+                .strip_prefix("TWS:")
+                .and_then(|s| s.strip_suffix(":STOCK"))
+                .unwrap_or(raw_sym)
+                .to_uppercase();
+            if code.is_empty() {
+                continue;
+            }
+            let price = match parse_f64_opt(entry.get("6")).filter(|&p| p > 0.0) {
+                Some(p) => p,
+                None => continue,
             };
-            let price = parse_f64_opt(entry.get("z"))
+            let prev_close = parse_f64_opt(entry.get("21"))
                 .filter(|&p| p > 0.0)
-                .or_else(|| parse_first_book_price(entry.get("b")))
-                .or_else(|| parse_first_book_price(entry.get("a")))
-                .unwrap_or(prev_close);
-
+                .unwrap_or(price);
             let name = entry
-                .get("n")
+                .get("200009")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&code)
                 .to_string();
-
-            let open = parse_f64_opt(entry.get("o")).filter(|&v| v > 0.0);
-            let high = parse_f64_opt(entry.get("h")).filter(|&v| v > 0.0);
-            let low = parse_f64_opt(entry.get("l")).filter(|&v| v > 0.0);
-            let volume = entry
-                .get("v")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<u64>().ok());
+            let open = parse_f64_opt(entry.get("19")).filter(|&v| v > 0.0);
+            let high = parse_f64_opt(entry.get("12")).filter(|&v| v > 0.0);
+            let low = parse_f64_opt(entry.get("13")).filter(|&v| v > 0.0);
+            let volume = entry.get("800001").and_then(|v| v.as_u64());
 
             let change = price - prev_close;
             let change_percent = if prev_close > 0.0 {
@@ -165,23 +289,10 @@ pub fn fetch_tw_batch(
                     low,
                     volume,
                     updated_at: updated_at.clone(),
-                    source: "TWSE",
+                    source: "Cnyes",
                     trading_period: None,
                 },
             );
-        }
-    }
-
-    // Fallback to Yahoo Finance for any missing TW symbols
-    for item in items {
-        let key = item.key();
-        if !result.contains_key(&key) {
-            let code = item.symbol.trim().to_uppercase();
-            if let Ok(q) = fetch_yahoo_single(agent, &format!("{code}.TW"), item, false)
-                .or_else(|_| fetch_yahoo_single(agent, &format!("{code}.TWO"), item, false))
-            {
-                result.insert(key, q);
-            }
         }
     }
 
@@ -203,12 +314,14 @@ pub fn fetch_yahoo_single(
     } else {
         ""
     };
+    let ts = Utc::now().timestamp_millis();
     let url = format!(
-        "https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1m&range=1d{ext_param}"
+        "https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?interval=1m&range=1d{ext_param}&_={ts}"
     );
 
     let resp = agent
         .get(&url)
+        .set("Cache-Control", "no-cache")
         .call()
         .map_err(|e| format!("Yahoo ({yahoo_symbol}) 連線失敗: {e}"))?;
 

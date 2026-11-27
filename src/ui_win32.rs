@@ -18,7 +18,7 @@ use crate::win32_util::{
     open_url_in_browser, rgb, set_prevent_sleep, to_wide, virtual_screen_bounds,
 };
 use crate::worker::{QuoteWorker, WM_APP_WORKER_EVENT, WorkerCommand, WorkerEvent, WorkerStatus};
-use chrono::Utc;
+use chrono::{Local, Utc};
 use std::collections::HashMap;
 use std::ptr;
 use std::sync::mpsc::{self, Receiver};
@@ -158,6 +158,7 @@ struct AppState {
     worker: Option<QuoteWorker>,
     worker_status: WorkerStatus,
     error_text: Option<String>,
+    last_updated_hms: Option<String>,
     tw_period: Option<TradingPeriod>,
     us_period: Option<TradingPeriod>,
     update_rx: Option<Receiver<Result<UpdateCheckResult, String>>>,
@@ -358,6 +359,9 @@ impl AppState {
             dirty = true;
             match evt {
                 WorkerEvent::QuotesUpdated(map) => {
+                    if !map.is_empty() {
+                        self.last_updated_hms = Some(Local::now().format("%H:%M:%S").to_string());
+                    }
                     for (k, q) in map {
                         if let Some(item) = self.config.watchlist.iter_mut().find(|i| i.key() == k)
                         {
@@ -1384,13 +1388,21 @@ impl AppState {
                     right: width,
                     bottom: height,
                 };
+                let status_owned;
                 let status_str = if let Some(err) = &self.error_text {
                     err.as_str()
                 } else {
                     match self.worker_status {
                         WorkerStatus::Initializing => lang.status_init(),
                         WorkerStatus::Updating => lang.status_updating(),
-                        WorkerStatus::Updated => lang.status_updated(),
+                        WorkerStatus::Updated => {
+                            if let Some(hms) = &self.last_updated_hms {
+                                status_owned = format!("{} {hms}", lang.status_updated());
+                                status_owned.as_str()
+                            } else {
+                                lang.status_updated()
+                            }
+                        }
                         WorkerStatus::IdleClosed => lang.status_idle_closed(),
                     }
                 };
@@ -1850,6 +1862,7 @@ pub fn run_win32_app() {
             worker: None,
             worker_status: WorkerStatus::Initializing,
             error_text: None,
+            last_updated_hms: None,
             tw_period: None,
             us_period: None,
             update_rx: None,
