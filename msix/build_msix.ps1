@@ -15,6 +15,8 @@ param(
 
     [string]$PublisherDisplayName = "tgsastudio",
 
+    [string]$DisplayName = "Stock TW",
+
     [string]$Version = ""
 )
 
@@ -57,6 +59,7 @@ $manifest = Get-Content (Join-Path $PSScriptRoot "AppxManifest.xml") -Raw -Encod
 $manifest = $manifest.Replace("__PACKAGE_IDENTITY_NAME__", $IdentityName)
 $manifest = $manifest.Replace("__PUBLISHER_CN__", $Publisher)
 $manifest = $manifest.Replace("__PUBLISHER_DISPLAY_NAME__", $PublisherDisplayName)
+$manifest = $manifest.Replace("__APP_DISPLAY_NAME__", $DisplayName)
 $manifest = $manifest.Replace("__APP_VERSION__", $Version)
 [System.IO.File]::WriteAllText((Join-Path $stageDir "AppxManifest.xml"), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 

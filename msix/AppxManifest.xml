@@ -12,7 +12,7 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>Stock TW</DisplayName>
+    <DisplayName>__APP_DISPLAY_NAME__</DisplayName>
     <PublisherDisplayName>__PUBLISHER_DISPLAY_NAME__</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -36,7 +36,7 @@
       Executable="simple_stock.exe"
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="Stock TW"
+        DisplayName="__APP_DISPLAY_NAME__"
         Description="Lightweight native Windows real-time stock dashboard for Taiwan and US markets."
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
