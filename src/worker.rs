@@ -237,11 +237,7 @@ impl QuoteWorker {
                         consecutive_errors = 0;
                     }
                     Ok(WorkerCommand::SetMinimized(is_min)) => {
-                        let was_min = minimized;
                         minimized = is_min;
-                        if was_min && !is_min && config.pause_when_minimized {
-                            initial_fetch_done = false;
-                        }
                     }
                     Ok(WorkerCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                     Err(RecvTimeoutError::Timeout) => {}
