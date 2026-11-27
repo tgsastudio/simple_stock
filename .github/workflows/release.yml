@@ -80,3 +80,45 @@ jobs:
         with:
           files: release_signed/*
           generate_release_notes: true
+
+  build-msix:
+    name: Build Microsoft Store MSIX (x64 & arm64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+
+      - name: Build release binaries (x64 & arm64)
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc
+          cargo build --release --target aarch64-pc-windows-msvc
+
+      - name: Package MSIX (Windows SDK makeappx)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File msix\build_msix.ps1 `
+            -IdentityName "TGSAStudio.TWStock-" `
+            -Publisher "CN=357D3BC5-5BA3-4612-8287-1B9D2B3CDB1A" `
+            -PublisherDisplayName "TGSA Studio" `
+            -DisplayName "Stock TW" `
+            -Arch "x64" `
+            -Target "x86_64-pc-windows-msvc"
+          powershell -NoProfile -ExecutionPolicy Bypass -File msix\build_msix.ps1 `
+            -IdentityName "TGSAStudio.TWStock-" `
+            -Publisher "CN=357D3BC5-5BA3-4612-8287-1B9D2B3CDB1A" `
+            -PublisherDisplayName "TGSA Studio" `
+            -DisplayName "Stock TW" `
+            -Arch "arm64" `
+            -Target "aarch64-pc-windows-msvc"
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-tw-msix
+          path: dist\StockTW-*.msix
+          if-no-files-found: error

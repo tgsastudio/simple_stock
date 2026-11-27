@@ -4,17 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       identity_name:
-        description: 'Partner Center Package/Identity/Name (e.g. 12345tgsastudio.StockTW)'
+        description: 'Partner Center Package/Identity/Name (e.g. TGSAStudio.TWStock-)'
         required: true
+        default: 'TGSAStudio.TWStock-'
         type: string
       publisher_cn:
-        description: 'Partner Center Package/Identity/Publisher (e.g. CN=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX)'
+        description: 'Partner Center Package/Identity/Publisher'
         required: true
+        default: 'CN=357D3BC5-5BA3-4612-8287-1B9D2B3CDB1A'
         type: string
       publisher_display_name:
         description: 'Partner Center PublisherDisplayName'
         required: false
-        default: 'tgsastudio'
+        default: 'TGSA Studio'
         type: string
       display_name:
         description: 'Reserved Product DisplayName in Partner Center'
