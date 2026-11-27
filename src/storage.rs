@@ -164,7 +164,13 @@ pub fn write_encrypted(path: &Path, plaintext: &[u8]) -> Result<(), String> {
         let _ = fs::create_dir_all(parent);
     }
     let encrypted = encrypt_bytes(plaintext)?;
-    fs::write(path, encrypted).map_err(|e| format!("Write failed: {e}"))
+    let tmp_path = path.with_extension("dat.tmp");
+    fs::write(&tmp_path, &encrypted).map_err(|e| format!("Write temp failed: {e}"))?;
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("Rename failed: {e}"));
+    }
+    Ok(())
 }
 
 pub fn read_encrypted(path: &Path) -> Result<Vec<u8>, String> {

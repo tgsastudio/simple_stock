@@ -90,8 +90,11 @@ pub fn apply_dark_title_bar(hwnd: HWND, dark: bool) {
     }
 }
 
-/// 使用預設瀏覽器開啟指定網址（用於下載 GitHub Release 更新）
+/// 使用預設瀏覽器開啟指定網址（僅允許 `https://` 協定，防止非預期 URI scheme 執行）
 pub fn open_url_in_browser(url: &str) {
+    if !url.starts_with("https://") {
+        return;
+    }
     let op = to_wide("open");
     let target = to_wide(url);
     unsafe {

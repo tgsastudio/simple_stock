@@ -11,7 +11,7 @@ use crate::dialogs::{
 };
 use crate::i18n::{Lang, resolve_lang};
 use crate::market_hours::TradingPeriod;
-use crate::quote::QuoteData;
+use crate::quote::{QuoteData, sanitize_symbol};
 use crate::updater::{UpdateCheckResult, check_for_updates, should_auto_check_update};
 use crate::win32_util::{
     apply_dark_title_bar, font_bold, font_regular, font_semibold, format_number, format_shares,
@@ -96,6 +96,7 @@ enum HitTarget {
     Filter(MarketFilter),
     DragHandle(usize),
     EditPos(usize),
+    OpenQuote(usize),
     StockCard(usize),
 }
 
@@ -114,6 +115,7 @@ struct HitRect {
 struct FontSet {
     title: HFONT,
     symbol: HFONT,
+    name: HFONT,
     price: HFONT,
     body: HFONT,
     small: HFONT,
@@ -127,7 +129,8 @@ impl FontSet {
         let s = |px: i32| ((px as f32) * (dpi as f32) / 96.0).round() as i32;
         Self {
             title: font_bold(s(15)),
-            symbol: font_semibold(s(14)),
+            symbol: font_semibold(s(12)),
+            name: font_bold(s(13)),
             price: font_bold(s(16)),
             body: font_regular(s(13)),
             small: font_regular(s(12)),
@@ -141,6 +144,7 @@ impl FontSet {
         unsafe {
             DeleteObject(self.title as _);
             DeleteObject(self.symbol as _);
+            DeleteObject(self.name as _);
             DeleteObject(self.price as _);
             DeleteObject(self.body as _);
             DeleteObject(self.small as _);
@@ -1094,14 +1098,20 @@ impl AppState {
                             right: sx + sym_w,
                             bottom: row1_top + row1_h,
                         };
+                        let sym_col = if dark {
+                            rgb(156, 168, 188)
+                        } else {
+                            rgb(90, 100, 118)
+                        };
                         draw_text(
                             mem_dc,
                             &item.symbol,
                             &sym_r,
                             self.fonts.symbol,
-                            text_primary,
+                            sym_col,
                             DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
                         );
+                        push_clipped_hit(&mut self.hits, sym_r, list_top, list_bottom, HitTarget::OpenQuote(idx));
 
                         if !is_compact {
                             let pos_btn_r = RECT {
@@ -1150,10 +1160,11 @@ impl AppState {
                             mem_dc,
                             name_str,
                             &name_r,
-                            self.fonts.small,
-                            text_muted,
+                            self.fonts.name,
+                            text_primary,
                             DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS,
                         );
+                        push_clipped_hit(&mut self.hits, name_r, list_top, list_bottom, HitTarget::OpenQuote(idx));
 
                         // 右側：現價與漲跌幅
                         let right_pad = card_r.right - self.sc(10);
@@ -1708,8 +1719,11 @@ unsafe extern "system" fn main_wndproc(
             }
 
             if let Some(from_idx) = st.dragging_idx {
-                if let Some(HitTarget::StockCard(to_idx) | HitTarget::DragHandle(to_idx)) =
-                    st.hit_test(x, y)
+                if let Some(
+                    HitTarget::StockCard(to_idx)
+                    | HitTarget::DragHandle(to_idx)
+                    | HitTarget::OpenQuote(to_idx),
+                ) = st.hit_test(x, y)
                 {
                     if from_idx != to_idx
                         && from_idx < st.config.watchlist.len()
@@ -1728,6 +1742,7 @@ unsafe extern "system" fn main_wndproc(
                     Some(
                         HitTarget::StockCard(i)
                         | HitTarget::EditPos(i)
+                        | HitTarget::OpenQuote(i)
                         | HitTarget::DragHandle(i),
                     ) => Some(i),
                     _ => None,
@@ -1821,6 +1836,20 @@ unsafe extern "system" fn main_wndproc(
                 Some(HitTarget::EditPos(idx)) => {
                     st.open_edit_position(idx);
                 }
+                Some(HitTarget::OpenQuote(idx)) => {
+                    if let Some(item) = st.config.watchlist.get(idx) {
+                        let sym = sanitize_symbol(&item.symbol);
+                        if !sym.is_empty() {
+                            let url = match item.market {
+                                Market::Tw => format!("https://www.cnyes.com/twstock/{sym}"),
+                                Market::Us => {
+                                    format!("https://invest.cnyes.com/usstock/detail/{sym}")
+                                }
+                            };
+                            open_url_in_browser(&url);
+                        }
+                    }
+                }
                 Some(HitTarget::DragHandle(idx)) => {
                     st.dragging_idx = Some(idx);
                     unsafe {
@@ -1854,7 +1883,10 @@ unsafe extern "system" fn main_wndproc(
             let x = (lparam & 0xFFFF) as i16 as i32;
             let y = ((lparam >> 16) & 0xFFFF) as i16 as i32;
             if let Some(
-                HitTarget::StockCard(idx) | HitTarget::EditPos(idx) | HitTarget::DragHandle(idx),
+                HitTarget::StockCard(idx)
+                | HitTarget::EditPos(idx)
+                | HitTarget::OpenQuote(idx)
+                | HitTarget::DragHandle(idx),
             ) = st.hit_test(x, y)
             {
                 st.show_context_menu(idx);

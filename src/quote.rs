@@ -79,6 +79,15 @@ fn now_hms() -> String {
     Local::now().format("%H:%M:%S").to_string()
 }
 
+/// 過濾股票代碼，僅保留合法代碼字元（英數字與 `.` `-` `_` `^`），防止 URL 參數注入
+pub fn sanitize_symbol(raw: &str) -> String {
+    raw.trim()
+        .to_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '^'))
+        .collect()
+}
+
 /// Fetch Taiwan stock quotes in a single batch from Cnyes real-time API,
 /// falling back to TWSE/TPEx MIS and Yahoo Finance for any missing symbols.
 pub fn fetch_tw_batch(
@@ -107,7 +116,10 @@ pub fn fetch_tw_batch(
     // 2. Fallback: TWSE/TPEx MIS public API for any missing symbols
     let mut channels = Vec::with_capacity(missing.len() * 2);
     for item in &missing {
-        let code = item.symbol.trim().to_uppercase();
+        let code = sanitize_symbol(&item.symbol);
+        if code.is_empty() {
+            continue;
+        }
         channels.push(format!("tse_{code}.tw"));
         channels.push(format!("otc_{code}.tw"));
     }
@@ -192,7 +204,10 @@ pub fn fetch_tw_batch(
     for item in items {
         let key = item.key();
         if !result.contains_key(&key) {
-            let code = item.symbol.trim().to_uppercase();
+            let code = sanitize_symbol(&item.symbol);
+            if code.is_empty() {
+                continue;
+            }
             if let Ok(q) = fetch_yahoo_single(agent, &format!("{code}.TW"), item, false)
                 .or_else(|_| fetch_yahoo_single(agent, &format!("{code}.TWO"), item, false))
             {
@@ -214,8 +229,13 @@ fn fetch_cnyes_tw_batch(
 ) -> Result<HashMap<String, QuoteData>, String> {
     let syms: Vec<String> = items
         .iter()
-        .map(|i| format!("TWS:{}:STOCK", i.symbol.trim().to_uppercase()))
+        .map(|i| sanitize_symbol(&i.symbol))
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("TWS:{s}:STOCK"))
         .collect();
+    if syms.is_empty() {
+        return Ok(HashMap::new());
+    }
     let ts = Utc::now().timestamp_millis();
     let url = format!(
         "https://ws.api.cnyes.com/ws/api/v1/quote/quotes/{}?_={ts}",
@@ -461,7 +481,10 @@ pub fn fetch_us_quotes(
     let mut map = HashMap::new();
     let mut last_err = None;
     for item in items {
-        let sym = item.symbol.trim().to_uppercase();
+        let sym = sanitize_symbol(&item.symbol);
+        if sym.is_empty() {
+            continue;
+        }
         match fetch_yahoo_single(agent, &sym, item, include_extended) {
             Ok(q) => {
                 map.insert(item.key(), q);

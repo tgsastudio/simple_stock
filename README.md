@@ -54,7 +54,7 @@ ISCC.exe installer\simple_stock.iss
 1. 點擊提示視窗中的 **「其他資訊（More info）」** → **「仍要執行（Run anyway）」** 即可正常安裝。
 2. 每次 GitHub Release 皆由 GitHub Actions 公開原始碼自動編譯打包，並隨附 `SHA256SUMS.txt`，您可在 PowerShell 中驗證下載檔案完整性：
    ```powershell
-   Get-FileHash .\StockTW-Setup-x64-v1.3.6.exe -Algorithm SHA256
+   Get-FileHash .\StockTW-Setup-x64-v1.3.7.exe -Algorithm SHA256
    ```
 
 ## Privacy Notice & License
