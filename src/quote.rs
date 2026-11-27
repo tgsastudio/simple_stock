@@ -360,20 +360,33 @@ pub fn fetch_yahoo_single(
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
 
-    let price = if include_extended {
+    let fullday_price = if include_extended {
+        parse_f64_opt(meta.get("fulldayPrice")).filter(|&v| v > 0.0)
+    } else {
+        None
+    };
+
+    let price = if let Some(fdp) = fullday_price {
+        fdp
+    } else if include_extended {
         latest_extended_price(&body, reg_time).unwrap_or(reg_price)
     } else {
         reg_price
     };
-    let prev_close = parse_f64_opt(meta.get("chartPreviousClose"))
-        .or_else(|| parse_f64_opt(meta.get("previousClose")))
-        .unwrap_or(price);
 
-    let change = price - prev_close;
-    let change_percent = if prev_close > 0.0 {
-        (change / prev_close) * 100.0
+    let (prev_close, change, change_percent) = if let (Some(_), Some(chg), Some(pct)) = (
+        fullday_price,
+        parse_f64_opt(meta.get("fulldayChange")),
+        parse_f64_opt(meta.get("fulldayChangePercent")),
+    ) {
+        (price - chg, chg, pct)
     } else {
-        0.0
+        let pc = parse_f64_opt(meta.get("chartPreviousClose"))
+            .or_else(|| parse_f64_opt(meta.get("previousClose")))
+            .unwrap_or(price);
+        let chg = price - pc;
+        let pct = if pc > 0.0 { (chg / pc) * 100.0 } else { 0.0 };
+        (pc, chg, pct)
     };
 
     let display_name = if !item.name.is_empty() && item.name != item.symbol {

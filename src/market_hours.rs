@@ -35,15 +35,25 @@ impl TradingPeriod {
         self.reg_start > 0 && now_ts >= self.reg_start && now_ts <= self.reg_end
     }
 
+    /// 判斷目前時間所處的美股交易階段（正規盤、盤前/盤後、休市）
+    pub fn us_phase(self, now_ts: i64, include_extended: bool) -> UsPhase {
+        if self.reg_start > 0 && now_ts >= self.reg_start && now_ts <= self.reg_end {
+            return UsPhase::Regular;
+        }
+        if include_extended {
+            let in_pre = self.pre_start > 0 && now_ts >= self.pre_start && now_ts <= self.pre_end;
+            let in_post =
+                self.post_start > 0 && now_ts >= self.post_start && now_ts <= self.post_end;
+            if in_pre || in_post {
+                return UsPhase::Extended;
+            }
+        }
+        UsPhase::Closed
+    }
+
     /// 判斷目前時間是否處於美股交易時段（含或不含盤前/盤後）
     pub fn is_us_open(self, now_ts: i64, include_extended: bool) -> bool {
-        let in_reg = self.reg_start > 0 && now_ts >= self.reg_start && now_ts <= self.reg_end;
-        if !include_extended {
-            return in_reg;
-        }
-        let in_pre = self.pre_start > 0 && now_ts >= self.pre_start && now_ts <= self.pre_end;
-        let in_post = self.post_start > 0 && now_ts >= self.post_start && now_ts <= self.post_end;
-        in_pre || in_reg || in_post
+        self.us_phase(now_ts, include_extended) != UsPhase::Closed
     }
 }
 

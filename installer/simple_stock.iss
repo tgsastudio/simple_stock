@@ -1,15 +1,15 @@
 [Setup]
 AppId={{8E9B7D4C-4B6E-4A2D-9C1F-51A2B3C4D5E6}
 AppName=Stock TW
-AppVersion=1.3.8
-VersionInfoVersion=1.3.8.0
+AppVersion=1.3.9
+VersionInfoVersion=1.3.9.0
 AppPublisher=tgsastudio
 AppPublisherURL=https://github.com/tgsastudio/simple_stock
 DefaultDirName={autopf}\Stock TW
 DefaultGroupName=Stock TW
 AllowNoIcons=yes
 OutputDir=..\dist
-OutputBaseFilename=StockTW-Setup-x64-v1.3.8
+OutputBaseFilename=StockTW-Setup-x64-v1.3.9
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\simple_stock.exe
 Compression=lzma2

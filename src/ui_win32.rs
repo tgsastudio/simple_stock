@@ -10,7 +10,7 @@ use crate::dialogs::{
     open_update_prompt_dialog,
 };
 use crate::i18n::{Lang, resolve_lang};
-use crate::market_hours::TradingPeriod;
+use crate::market_hours::{TradingPeriod, UsPhase};
 use crate::quote::{QuoteData, sanitize_symbol};
 use crate::updater::{UpdateCheckResult, check_for_updates, should_auto_check_update};
 use crate::win32_util::{
@@ -760,9 +760,11 @@ impl AppState {
 
             let now_ts = Utc::now().timestamp();
             let tw_is_open = self.tw_period.is_some_and(|tp| tp.is_tw_open(now_ts));
-            let us_is_open = self
-                .us_period
-                .is_some_and(|tp| tp.is_us_open(now_ts, self.config.include_us_extended));
+            let us_phase = self.us_period.map_or(UsPhase::Closed, |tp| {
+                tp.us_phase(now_ts, self.config.include_us_extended)
+            });
+            let open_dot_col = if dark { rgb(52, 211, 130) } else { rgb(22, 163, 74) };
+            let ext_dot_col = if dark { rgb(250, 204, 21) } else { rgb(202, 138, 4) };
 
             // 空間足夠時顯示 TW / US 盤中指示燈
             if mode == ViewMode::Standard && title_right > pad + self.sc(142) {
@@ -780,7 +782,11 @@ impl AppState {
                 draw_text(mem_dc, "TW", &tr, self.fonts.small, text_muted, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
 
                 dx += self.sc(32);
-                let us_c = if us_is_open { rgb(52, 211, 130) } else { rgb(115, 122, 135) };
+                let us_c = match us_phase {
+                    UsPhase::Regular => rgb(52, 211, 130),
+                    UsPhase::Extended => ext_dot_col,
+                    UsPhase::Closed => rgb(115, 122, 135),
+                };
                 draw_dot(mem_dc, dx, dot_y, dot_r, us_c);
                 let ur = RECT {
                     left: dx + self.sc(6),
@@ -802,17 +808,18 @@ impl AppState {
                 let bar_h = self.sc(22);
                 let mut fx = pad;
                 let base_tab_w = self.sc(if is_compact { 42 } else { 48 });
-                let open_dot_col = if dark { rgb(52, 211, 130) } else { rgb(22, 163, 74) };
                 for (f, lbl) in [
                     (MarketFilter::All, lang.filter_all()),
                     (MarketFilter::TwOnly, lang.filter_tw()),
                     (MarketFilter::UsOnly, lang.filter_us()),
                 ] {
-                    let is_open = match f {
-                        MarketFilter::TwOnly => tw_is_open,
-                        MarketFilter::UsOnly => us_is_open,
-                        MarketFilter::All => false,
+                    let dot_col = match f {
+                        MarketFilter::TwOnly if tw_is_open => Some(open_dot_col),
+                        MarketFilter::UsOnly if us_phase == UsPhase::Regular => Some(open_dot_col),
+                        MarketFilter::UsOnly if us_phase == UsPhase::Extended => Some(ext_dot_col),
+                        _ => None,
                     };
+                    let is_open = dot_col.is_some();
                     let tab_w = if is_open {
                         base_tab_w + self.sc(8)
                     } else {
@@ -834,9 +841,9 @@ impl AppState {
                         bg_col
                     };
                     draw_round_box(mem_dc, &fr, fill, if active { card_border } else { fill }, self.sc(5));
-                    let txt_r = if is_open {
+                    let txt_r = if let Some(c) = dot_col {
                         let dot_r = self.sc(3).max(2);
-                        draw_dot(mem_dc, fr.left + self.sc(9), fr.top + bar_h / 2, dot_r, open_dot_col);
+                        draw_dot(mem_dc, fr.left + self.sc(9), fr.top + bar_h / 2, dot_r, c);
                         RECT {
                             left: fr.left + self.sc(10),
                             top: fr.top,
